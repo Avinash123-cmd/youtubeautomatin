@@ -13,12 +13,13 @@ import { Body, Controller, Delete, Get, Param, Post, Put, Req, Res } from '@nest
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { CurrentContext, Public, SkipCsrf } from '../common/decorators/auth.decorators';
+import { CurrentContext, Public } from '../common/decorators/auth.decorators';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
 import type { RequestContext } from '../common/guards/session-auth.guard';
 import { env } from '../common/env';
 import { passwordSchema as sharedPasswordSchema } from '@clipforge/validation';
 import { SessionService } from './session.service';
+import { clearPendingStepUp, readPendingStepUp, setPendingStepUp } from './pending-step-up';
 import { SecurityService } from './security.service';
 import { TelegramAccountService } from './telegram-account.service';
 
@@ -27,10 +28,10 @@ const codeSchema = z.string().trim().regex(/^\d{6}$/, 'Code must be 6 digits');
 const passwordSchema = sharedPasswordSchema;
 
 const stepUpCompleteSchema = z.object({
-  challengeIds: z.array(z.string().min(1)).min(1).max(2),
+  challengeIds: z.array(z.string().uuid()).min(1).max(2),
   codes: z.array(codeSchema).min(1).max(2),
 });
-const resendSchema = z.object({ challengeId: z.string().min(1) });
+const resendSchema = z.object({ challengeId: z.string().uuid() });
 const forgotSchema = z.object({ email: z.string().email() });
 const resetSchema = z.object({ email: z.string().email(), code: codeSchema, newPassword: passwordSchema });
 const otpModeSchema = z.object({ mode: z.enum(['OFF', 'EMAIL', 'TELEGRAM', 'DUAL']) });
@@ -67,33 +68,50 @@ export class SecurityController {
 
   // ------------------------------------------------------------------ step-up (public)
 
+  @Get('otp/pending')
+  @Public()
+  pendingStepUp(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    res.setHeader('Cache-Control', 'no-store');
+    return { stepUp: readPendingStepUp(req) };
+  }
+
+  @Post('otp/cancel')
+  @Public()
+  cancelStepUp(@Res({ passthrough: true }) res: Response) {
+    clearPendingStepUp(res);
+    return { cancelled: true };
+  }
+
   @Post('otp/step-up/complete')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 20, windowSeconds: 300, scope: 'otp-verify' })
   @ApiOperation({ summary: 'Verify every required one-time code and open the session' })
   async completeStepUp(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const input = stepUpCompleteSchema.parse(body);
     const session = await this.security.completeStepUp(input, req);
+    clearPendingStepUp(res);
     this.setSessionCookies(res, session.rawToken);
     return { csrfToken: session.csrfToken, userId: session.userId, workspaceId: session.workspaceId };
   }
 
   @Post('otp/resend')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 5, windowSeconds: 300, scope: 'otp-resend' })
   @ApiOperation({ summary: 'Resend one challenge code (cooldown enforced server-side)' })
-  async resend(@Body() body: unknown, @Req() req: Request) {
+  async resend(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { challengeId } = resendSchema.parse(body);
-    return { challenge: await this.security.resend(challengeId, req) };
+    const challenge = await this.security.resend(challengeId, req);
+    const pending = readPendingStepUp(req);
+    if (pending?.challenges.some((item) => item.challengeId === challengeId)) {
+      setPendingStepUp(res, { ...pending, deliveryProblem: null, challenges: pending.challenges.map((item) => item.challengeId === challengeId ? challenge : item) });
+    }
+    return { challenge };
   }
 
   // ------------------------------------------------------------------ password recovery (public)
 
   @Post('forgot-password')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 5, windowSeconds: 900, scope: 'forgot-password' })
   @ApiOperation({ summary: 'Start password reset — same response whether or not the account exists' })
   async forgotPassword(@Body() body: unknown, @Req() req: Request) {
@@ -103,7 +121,6 @@ export class SecurityController {
 
   @Post('reset-password')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 10, windowSeconds: 900, scope: 'reset-password' })
   @ApiOperation({ summary: 'Finish a password reset with the emailed/Telegram code' })
   async resetPassword(@Body() body: unknown, @Req() req: Request) {
@@ -112,7 +129,6 @@ export class SecurityController {
 
   @Post('recovery-codes/redeem')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 5, windowSeconds: 900, scope: 'recovery-redeem' })
   @ApiOperation({ summary: 'Use a recovery code to reset a password when email and Telegram are lost' })
   async redeemRecoveryCode(@Body() body: unknown, @Req() req: Request) {

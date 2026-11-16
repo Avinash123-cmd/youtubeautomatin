@@ -5,7 +5,7 @@
  * Anything that needs a database, an SMTP server or a session lives in the integration and E2E
  * suites — mocking those here would only test the mock.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OtpService } from '../../apps/api/src/auth/otp.service';
 import { EmailService, maskAddress } from '../../apps/api/src/common/services/email.service';
 import { describeDevice } from '../../apps/api/src/auth/security.service';
@@ -37,6 +37,9 @@ describe('one-time code generation', () => {
 });
 
 describe('code hashing', () => {
+  const original = process.env.OTP_SECRET;
+  beforeAll(() => { process.env.OTP_SECRET = 'unit-test-secret-with-at-least-32-characters'; });
+  afterAll(() => { if (original === undefined) delete process.env.OTP_SECRET; else process.env.OTP_SECRET = original; });
   it('is deterministic for the same challenge and code', () => {
     expect(OtpService.hashCode('c-1', '123456')).toBe(OtpService.hashCode('c-1', '123456'));
   });

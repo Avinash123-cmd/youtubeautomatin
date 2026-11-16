@@ -6,7 +6,8 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { prisma, appendAuditLog } from '@clipforge/database';
 import { parseYouTubeVideoId, isYouTubeUrl } from '@clipforge/validation';
-import type { ImportUrlInput, InitiateUploadInput } from '@clipforge/validation';
+import type { ImportUrlInput, InitiateUploadInput, SourceListQuery } from '@clipforge/validation';
+import type { Prisma } from '@prisma/client';
 import { env } from '../common/env';
 import { AppConfigService } from '../common/services/config.service';
 import { MediaValidationService } from '../media/media-validation.service';
@@ -373,15 +374,21 @@ export class SourcesService {
     }
   }
 
-  async list(ctx: RequestContext, query: { page: number; pageSize: number }) {
+  async list(ctx: RequestContext, query: SourceListQuery) {
+    const where = {
+      workspaceId: ctx.workspaceId, deletedAt: null,
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.search ? { originalFileName: { contains: query.search, mode: 'insensitive' as const } } : {}),
+    };
+    const orderBy: Prisma.SourceVideoOrderByWithRelationInput[] = [query.sort === 'largest' ? { sizeBytes: { sort: 'desc', nulls: 'last' } } : { createdAt: query.sort === 'oldest' ? 'asc' : 'desc' }, { id: 'asc' }];
     const [items, total] = await Promise.all([
       prisma.sourceVideo.findMany({
-        where: { workspaceId: ctx.workspaceId, deletedAt: null },
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy,
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
       }),
-      prisma.sourceVideo.count({ where: { workspaceId: ctx.workspaceId, deletedAt: null } }),
+      prisma.sourceVideo.count({ where }),
     ]);
     return { items: items.map((s) => this.toDto(s)), page: query.page, pageSize: query.pageSize, total };
   }

@@ -21,8 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 API = os.environ.get("CLIPFORGE_API", "http://127.0.0.1:4000")
-EMAIL = os.environ.get("CLIPFORGE_EMAIL", "admin@clipforge.local")
-PASSWORD = os.environ.get("CLIPFORGE_PASSWORD", "Sandbox-Admin-2026")
+EMAIL = os.environ.get("CLIPFORGE_EMAIL")
+PASSWORD = os.environ.get("CLIPFORGE_PASSWORD")
 PART_BYTES = 16 * 1024 * 1024
 
 jar = http.cookiejar.CookieJar()
@@ -80,7 +80,10 @@ def step(message: str) -> None:
 
 def main() -> int:
     global csrf_token
-    video_path = Path(sys.argv[1] if len(sys.argv) > 1 else "/home/user/testdata/hd-source.mp4")
+    video = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CLIPFORGE_TEST_VIDEO")
+    if not video or not EMAIL or not PASSWORD:
+        raise SystemExit("E2E prerequisites: set CLIPFORGE_TEST_VIDEO (speech-bearing video), CLIPFORGE_EMAIL and CLIPFORGE_PASSWORD for a disposable configured stack.")
+    video_path = Path(video)
     if not video_path.exists():
         raise SystemExit(f"test video not found: {video_path}")
 

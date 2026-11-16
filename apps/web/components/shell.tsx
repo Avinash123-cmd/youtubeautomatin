@@ -12,6 +12,7 @@ type NavItem = { href: string; label: string; short: string; icon: string };
 
 const NAV: NavItem[] = [
   { href: '/', label: 'Dashboard', short: 'Home', icon: 'M3 12h6v9H3zM10 3h4v18h-4zM15 8h6v13h-6z' },
+  { href: '/videos', label: 'Video library', short: 'Videos', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' },
   { href: '/create', label: 'Create project', short: 'Create', icon: 'M12 5v14M5 12h14' },
   { href: '/jobs', label: 'Processing', short: 'Jobs', icon: 'M12 6v6l4 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z' },
   { href: '/clips', label: 'Clip library', short: 'Clips', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' },

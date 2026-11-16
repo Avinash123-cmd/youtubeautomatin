@@ -16,8 +16,8 @@
  *  - **Single use.** `consumedAt` is set inside the same transaction that verifies, so a replayed
  *    code cannot succeed twice even under concurrency.
  */
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import { BadRequestException, HttpException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { prisma } from '@clipforge/database';
 import { EmailService, maskAddress } from '../common/services/email.service';
 import { TelegramClient } from '../notifications/telegram.client';
@@ -72,7 +72,9 @@ export class OtpService {
   private static secret(): string {
     // Derived from SESSION_SECRET so no new required variable appears in existing deployments;
     // a dedicated OTP_SECRET wins when an operator wants separate rotation.
-    return process.env.OTP_SECRET?.trim() || process.env.SESSION_SECRET || 'clipforge-otp-dev-secret';
+    const secret = process.env.OTP_SECRET?.trim() || process.env.SESSION_SECRET;
+    if (!secret || secret.length < 32) throw new Error('OTP requires a configured secret of at least 32 characters');
+    return secret;
   }
 
   static hashCode(challengeId: string, code: string): string {
@@ -109,10 +111,10 @@ export class OtpService {
   }
 
   /** Both channels are "available" only if something can actually deliver them. */
-  channelsAvailable(user: { telegramChatId: string | null }): { email: boolean; telegram: boolean } {
+  channelsAvailable(user: { telegramChatId: string | null; telegramUserId?: string | null; telegramLinkedAt?: Date | null }): { email: boolean; telegram: boolean } {
     return {
       email: this.email.configured,
-      telegram: Boolean(user.telegramChatId && (this.telegram ?? this.defaultTelegram())),
+      telegram: Boolean(user.telegramChatId && user.telegramUserId && user.telegramLinkedAt && (this.telegram ?? this.defaultTelegram())),
     };
   }
 
@@ -140,44 +142,35 @@ export class OtpService {
     ipAddress?: string | null;
     userAgent?: string | null;
   }): Promise<OtpDelivery> {
-    // Cooldown is per (user, purpose, channel): resending a login code must not reset the reset
-    // password code's clock, but hammering one channel is exactly what must stop.
-    const recent = await prisma.otpChallenge.findFirst({
-      where: { userId: input.userId, purpose: input.purpose, channel: input.channel, consumedAt: null },
-      orderBy: { sentAt: 'desc' },
-    });
-    if (recent && Date.now() - recent.sentAt.getTime() < this.cooldownSeconds * 1000) {
-      const remaining = Math.ceil((this.cooldownSeconds * 1000 - (Date.now() - recent.sentAt.getTime())) / 1000);
-      // Reuse the existing challenge rather than minting a second live code.
-      return {
-        challengeId: recent.id,
-        channel: recent.channel as OtpChannelName,
-        destination: input.channel === 'EMAIL' ? maskAddress(input.email) : maskTelegram(input.telegramChatId),
-        delivered: false,
-        error: `Wait ${remaining}s before requesting another code`,
-      };
+    // Recheck the persisted bot activation, never just a caller-supplied chat ID.
+    if (input.channel === 'TELEGRAM') {
+      const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { telegramChatId: true, telegramUserId: true, telegramLinkedAt: true } });
+      if (!user?.telegramUserId || !user.telegramLinkedAt || !user.telegramChatId || user.telegramChatId !== input.telegramChatId) {
+        throw new BadRequestException({ code: 'TELEGRAM_NOT_CONNECTED', message: 'Connect Telegram through the bot before requesting a code.' });
+      }
     }
-
     const code = OtpService.formatCode(OtpService.generateCode());
     const expiresAt = new Date(Date.now() + this.ttlSeconds * 1000);
-    const challenge = await prisma.otpChallenge.create({
-      data: {
-        userId: input.userId,
-        purpose: input.purpose,
-        channel: input.channel,
-        // The hash needs the id, so the row is created first and the hash written immediately after
-        // inside the same transaction.
-        codeHash: 'pending',
-        expiresAt,
-        maxAttempts: this.maxAttempts,
-        ipAddress: input.ipAddress ?? null,
-        userAgent: input.userAgent ?? null,
-      },
+    const challenge = await prisma.$transaction(async (tx) => {
+      // Serialize issuance per user, including concurrent resend requests.
+      await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${input.userId}::uuid FOR UPDATE`;
+      const recent = await tx.otpChallenge.findFirst({
+        where: { userId: input.userId, purpose: input.purpose, channel: input.channel },
+        orderBy: { sentAt: 'desc' },
+      });
+      if (recent && Date.now() - recent.sentAt.getTime() < this.cooldownSeconds * 1000) return null;
+      await tx.otpChallenge.updateMany({
+        where: { userId: input.userId, purpose: input.purpose, channel: input.channel, consumedAt: null },
+        data: { consumedAt: new Date() },
+      });
+      const id = randomUUID();
+      return tx.otpChallenge.create({ data: {
+        id, userId: input.userId, purpose: input.purpose, channel: input.channel,
+        codeHash: OtpService.hashCode(id, code), expiresAt, maxAttempts: this.maxAttempts,
+        ipAddress: input.ipAddress ?? null, userAgent: input.userAgent ?? null,
+      } });
     });
-    await prisma.otpChallenge.update({
-      where: { id: challenge.id },
-      data: { codeHash: OtpService.hashCode(challenge.id, code) },
-    });
+    if (!challenge) throw new HttpException({ code: 'OTP_COOLDOWN', message: 'Wait before requesting another code.' }, 429);
 
     const delivery = await this.deliver(input, code, expiresAt);
     if (!delivery.delivered) {
@@ -242,30 +235,31 @@ export class OtpService {
    * A wrong attempt increments the counter *before* returning, so a crash cannot refund attempts.
    */
   async verify(challengeId: string, code: string): Promise<{ ok: true } | { ok: false; reason: OtpFailure; attemptsRemaining: number }> {
-    const challenge = await prisma.otpChallenge.findUnique({ where: { id: challengeId } });
-    if (!challenge) return { ok: false, reason: 'NOT_FOUND', attemptsRemaining: 0 };
-    if (challenge.consumedAt) return { ok: false, reason: 'CONSUMED', attemptsRemaining: 0 };
-    if (challenge.expiresAt.getTime() <= Date.now()) return { ok: false, reason: 'EXPIRED', attemptsRemaining: 0 };
-    if (challenge.attempts >= challenge.maxAttempts) return { ok: false, reason: 'TOO_MANY_ATTEMPTS', attemptsRemaining: 0 };
-    if (!CODE_PATTERN.test(code)) {
-      const updated = await this.bumpAttempt(challenge.id);
-      return { ok: false, reason: 'MISMATCH', attemptsRemaining: Math.max(0, challenge.maxAttempts - updated.attempts) };
-    }
-    if (!OtpService.verifyHash(challenge.id, code, challenge.codeHash)) {
-      const updated = await this.bumpAttempt(challenge.id);
-      return { ok: false, reason: 'MISMATCH', attemptsRemaining: Math.max(0, challenge.maxAttempts - updated.attempts) };
-    }
-    // Consume atomically: the updateMany filter makes a concurrent replay lose the race.
-    const consumed = await prisma.otpChallenge.updateMany({
-      where: { id: challenge.id, consumedAt: null },
-      data: { consumedAt: new Date() },
-    });
-    if (consumed.count === 0) return { ok: false, reason: 'CONSUMED', attemptsRemaining: 0 };
-    return { ok: true };
+    return this.verifyMany([{ challengeId, code }]);
   }
 
-  private async bumpAttempt(id: string): Promise<{ attempts: number }> {
-    return prisma.otpChallenge.update({ where: { id }, data: { attempts: { increment: 1 } }, select: { attempts: true } });
+  /** All required channels verify together; a failed code never consumes a correct sibling. */
+  async verifyMany(inputs: Array<{ challengeId: string; code: string }>): Promise<{ ok: true } | { ok: false; reason: OtpFailure; attemptsRemaining: number }> {
+    const ids = inputs.map((input) => input.challengeId);
+    if (!ids.length || ids.length > 2 || new Set(ids).size !== ids.length || ids.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) return { ok: false, reason: 'NOT_FOUND', attemptsRemaining: 0 };
+    return prisma.$transaction(async (tx): Promise<{ ok: true } | { ok: false; reason: OtpFailure; attemptsRemaining: number }> => {
+      // Consistent lock order prevents dual-channel verification deadlocks.
+      for (const id of [...ids].sort()) await tx.$queryRaw`SELECT id FROM "OtpChallenge" WHERE id = ${id}::uuid FOR UPDATE`;
+      for (const { challengeId, code } of inputs) {
+        const challenge = await tx.otpChallenge.findUnique({ where: { id: challengeId } });
+        if (!challenge) return { ok: false, reason: 'NOT_FOUND', attemptsRemaining: 0 };
+        if (challenge.consumedAt) return { ok: false, reason: 'CONSUMED', attemptsRemaining: 0 };
+        if (challenge.expiresAt.getTime() <= Date.now()) return { ok: false, reason: 'EXPIRED', attemptsRemaining: 0 };
+        if (challenge.attempts >= challenge.maxAttempts) return { ok: false, reason: 'TOO_MANY_ATTEMPTS', attemptsRemaining: 0 };
+        if (!CODE_PATTERN.test(code) || !OtpService.verifyHash(challenge.id, code, challenge.codeHash)) {
+          const updated = await tx.otpChallenge.update({ where: { id: challenge.id }, data: { attempts: { increment: 1 } } });
+          return { ok: false, reason: 'MISMATCH', attemptsRemaining: Math.max(0, challenge.maxAttempts - updated.attempts) };
+        }
+      }
+      // Every row is still locked and verified. Consume the whole set in one update.
+      await tx.otpChallenge.updateMany({ where: { id: { in: ids } }, data: { consumedAt: new Date() } });
+      return { ok: true };
+    });
   }
 
   /** Consumes every live challenge of a purpose (used once a multi-channel step has succeeded). */

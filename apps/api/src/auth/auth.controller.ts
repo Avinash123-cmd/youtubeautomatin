@@ -8,6 +8,7 @@ import { CurrentContext, Public, SkipCsrf } from '../common/decorators/auth.deco
 import type { RequestContext } from '../common/guards/session-auth.guard';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
 import { env } from '../common/env';
+import { setPendingStepUp } from './pending-step-up';
 import { AuthService } from './auth.service';
 import { FirebaseService } from './firebase.service';
 import { SessionService } from './session.service';
@@ -56,9 +57,10 @@ export class AuthController {
   @SkipCsrf()
   @ApiOperation({ summary: 'Obtain an anonymous CSRF token (signed double-submit cookie)' })
   csrf(@Res({ passthrough: true }) res: Response) {
+    res.setHeader('Cache-Control', 'no-store');
     const { token, cookieValue } = this.sessions.issueAnonymousCsrf();
     res.cookie('cf_csrf', cookieValue, {
-      httpOnly: false,
+      httpOnly: true,
       secure: env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
@@ -139,6 +141,10 @@ export class AuthController {
       const identity = await this.telegramOidc.completeLogin(code, state);
       const result = await this.auth.loginWithTelegram(identity, req);
       res.clearCookie(TELEGRAM_OIDC_STATE_COOKIE, { path: '/api/auth/telegram/callback' });
+      if ('otpRequired' in result) {
+        setPendingStepUp(res, result);
+        return res.redirect(303, new URL('/login?stepUp=1', env.APP_URL).toString());
+      }
       this.setSessionCookies(res, result.rawToken);
       return res.redirect(303, new URL('/', env.APP_URL).toString());
     } catch {
@@ -167,19 +173,21 @@ export class AuthController {
 
   @Post('firebase')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 10, windowSeconds: 300, scope: 'auth-firebase' })
   @ApiOperation({ summary: 'Exchange a Firebase ID token for a ClipForge session (Google sign-in)' })
   async firebaseLogin(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { idToken } = firebaseLoginSchema.parse(body);
     const result = await this.auth.loginWithFirebase(idToken, req);
+    if ('otpRequired' in result) {
+      setPendingStepUp(res, result);
+      return result;
+    }
     this.setSessionCookies(res, result.rawToken);
     return { csrfToken: result.csrfToken, userId: result.userId, workspaceId: result.workspaceId };
   }
 
   @Post('bootstrap')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 5, windowSeconds: 300, scope: 'auth-bootstrap' })
   @ApiOperation({ summary: 'One-time administrator bootstrap (requires ADMIN_BOOTSTRAP_TOKEN; refuses once a user exists)' })
   async bootstrap(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
@@ -206,7 +214,6 @@ export class AuthController {
 
   @Post('login')
   @Public()
-  @SkipCsrf()
   @RateLimit({ limit: 10, windowSeconds: 300, scope: 'auth-login' })
   async login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.auth.login(loginSchema.parse(body), req);

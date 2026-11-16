@@ -30,6 +30,7 @@ clipforge-ai/
 ├── docs/                         # design, operations, and status documents
 ├── docker-compose.dev.yml        # local stack
 ├── docker-compose.prod.yml       # production stack
+├── docker-compose.monitoring.yml # optional blackbox/Prometheus overlay
 ├── tsconfig.base.json            # shared TS compiler options
 └── package.json                  # npm workspaces + all top-level commands
 ```
@@ -180,3 +181,5 @@ Do not reorganise this tree to look tidier. Every path is referenced by a Docker
 service, a Render blueprint, a test or a document; a rename costs a day and buys nothing a reader
 gains from the table above. Add a directory only when it owns a concept, and delete one only when it
 has no files left.
+
+Generated `artifacts/ui` screenshots are optional evidence, not a required directory in a clean checkout.

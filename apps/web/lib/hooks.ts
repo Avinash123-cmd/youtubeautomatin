@@ -59,8 +59,9 @@ export function useSignInProviders() {
 export function useFirebaseLogin() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (input: { idToken: string }) => api<{ csrfToken: string }>('/api/auth/firebase', { method: 'POST', body: input }),
+    mutationFn: (input: { idToken: string }) => api<LoginResult>('/api/auth/firebase', { method: 'POST', body: input }),
     onSuccess: async (data) => {
+      if ('otpRequired' in data) return;
       setCsrfToken(data.csrfToken);
       await client.invalidateQueries({ queryKey: ['session'] });
     },
@@ -186,6 +187,15 @@ export function useCompleteStepUp() {
       await client.invalidateQueries({ queryKey: ['session'] });
     },
   });
+}
+
+export function usePendingStepUp() {
+  return useQuery({ queryKey: ['pending-step-up'], queryFn: () => api<{ stepUp: Extract<LoginResult, { otpRequired: true }> | null }>('/api/auth/security/otp/pending'), retry: false });
+}
+
+export function useCancelStepUp() {
+  const client = useQueryClient();
+  return useMutation({ mutationFn: () => api('/api/auth/security/otp/cancel', { method: 'POST' }), onSuccess: () => client.invalidateQueries({ queryKey: ['pending-step-up'] }) });
 }
 
 export function useResendOtp() {

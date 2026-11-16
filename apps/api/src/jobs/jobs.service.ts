@@ -76,6 +76,12 @@ export class JobsService {
     }
 
     const job = await prisma.$transaction(async (tx) => {
+      // Preflight checks above improve errors, but only a lock/recheck prevents concurrent creates.
+      await tx.$queryRaw`SELECT id FROM "SourceVideo" WHERE id = ${source.id}::uuid FOR UPDATE`;
+      const currentSource = await tx.sourceVideo.findFirst({ where: { id: source.id, workspaceId: ctx.workspaceId, deletedAt: null, status: 'VALIDATED' } });
+      if (!currentSource) throw new ConflictException({ code: 'CONFLICT', message: 'Source is no longer available for processing' });
+      const concurrentJob = await tx.processingJob.findFirst({ where: { sourceVideoId: source.id, workspaceId: ctx.workspaceId, status: { notIn: ['FAILED', 'CANCELLED', 'COMPLETED', 'PARTIALLY_COMPLETED'] } } });
+      if (concurrentJob) throw new ConflictException({ code: 'CONFLICT', message: 'Source already has an active job' });
       const created = await tx.processingJob.create({
         data: {
           workspaceId: ctx.workspaceId,

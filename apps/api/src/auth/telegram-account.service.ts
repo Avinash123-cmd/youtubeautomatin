@@ -81,12 +81,12 @@ export class TelegramAccountService {
     }
 
     if (command === '/help') {
-      await this.reply(chatId, 'ClipForge bot commands:\n/status — check the account connection\n/connect — open ClipForge settings to start a secure connection\n/disconnect — remove this bot connection');
+      await this.reply(chatId, 'ClipForge bot commands:\n/status — check the account connection\n/link — open ClipForge settings to start a secure connection\n/unlink — remove this bot connection');
       return;
     }
 
-    if (command === '/connect') {
-      await this.reply(chatId, `To connect, sign in to ClipForge and create a one-time link in Settings: https://t.me/${this.botUsername ?? 'ClipForgeBot'}`);
+    if ((command === '/connect' || command === '/link')) {
+      await this.reply(chatId, `To connect, sign in to ClipForge and create a one-time link in Settings: ${new URL('/security', env.APP_URL).toString()}`);
       return;
     }
 
@@ -99,8 +99,8 @@ export class TelegramAccountService {
       return;
     }
 
-    if (command === '/disconnect') {
-      await this.disconnectFromBot(String(sender.id), chatId);
+    if ((command === '/disconnect' || command === '/unlink')) {
+      await this.reply(chatId, `To disconnect securely, sign in to ClipForge and choose Disconnect Telegram: ${new URL('/security', env.APP_URL).toString()}`);
       return;
     }
 
@@ -154,33 +154,6 @@ export class TelegramAccountService {
       // The token, Telegram ID and database error are deliberately never echoed into chat.
       await this.reply(chatId, 'That connection link is invalid, expired, already used, or belongs to another account. Start a fresh connection from ClipForge Settings.');
     }
-  }
-
-  private async disconnectFromBot(telegramUserId: string, chatId: string): Promise<void> {
-    const user = await prisma.user.findUnique({ where: { telegramUserId }, select: { id: true, otpMode: true } });
-    if (!user) {
-      await this.reply(chatId, 'This Telegram account is not connected to ClipForge.');
-      return;
-    }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: user.id },
-        data: {
-          telegramUserId: null,
-          telegramUsername: null,
-          telegramChatId: null,
-          telegramLinkedAt: null,
-          ...(user.otpMode === 'TELEGRAM' ? { otpMode: 'OFF' } : user.otpMode === 'DUAL' ? { otpMode: 'EMAIL' } : {}),
-        },
-      });
-      await tx.telegramConnectionToken.updateMany({
-        where: { userId: user.id, consumedAt: null },
-        data: { consumedAt: new Date() },
-      });
-    }, { isolationLevel: 'Serializable' });
-    await appendAuditLog({ userId: user.id, action: 'AUTH_TELEGRAM_DISCONNECTED', summary: 'Telegram bot account disconnected by the account owner' }).catch(() => undefined);
-    await this.reply(chatId, 'Telegram has been disconnected from your ClipForge account.');
   }
 
   private async reply(chatId: string, text: string): Promise<void> {

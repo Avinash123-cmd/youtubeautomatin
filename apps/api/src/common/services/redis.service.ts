@@ -13,7 +13,8 @@ export class RedisService implements OnModuleDestroy {
   readonly subscriber: Redis;
 
   constructor() {
-    const options = { maxRetriesPerRequest: null as null, enableReadyCheck: true, lazyConnect: false };
+    // API requests must fail boundedly during outages. Blocking BullMQ workers use separate clients.
+    const options = { maxRetriesPerRequest: 2, connectTimeout: 5000, commandTimeout: 5000, enableReadyCheck: true, lazyConnect: false };
     this.client = new Redis(env.REDIS_URL, options);
     this.subscriber = new Redis(env.REDIS_URL, options);
   }
@@ -24,9 +25,7 @@ export class RedisService implements OnModuleDestroy {
 
   async hit(identifier: string, limit: number, windowSeconds: number): Promise<{ allowed: boolean; remaining: number; resetSeconds: number }> {
     const key = this.key('ratelimit', identifier);
-    const count = await this.client.incr(key);
-    if (count === 1) await this.client.expire(key, windowSeconds);
-    const ttl = await this.client.ttl(key);
+    const [count, ttl] = await this.client.eval(RATE_LIMIT_SCRIPT, 1, key, windowSeconds) as [number, number];
     return { allowed: count <= limit, remaining: Math.max(0, limit - count), resetSeconds: ttl < 0 ? windowSeconds : ttl };
   }
 
@@ -35,3 +34,14 @@ export class RedisService implements OnModuleDestroy {
     await this.subscriber.quit().catch(() => undefined);
   }
 }
+
+/** Increment and TTL assignment must be atomic, including repair of old orphaned counters. */
+export const RATE_LIMIT_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return {count, ttl}
+`;

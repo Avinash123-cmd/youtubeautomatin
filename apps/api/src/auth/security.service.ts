@@ -65,6 +65,7 @@ export class SecurityService {
   async beginStepUp(
     user: { id: string; email: string; otpMode: OtpMode; telegramChatId: string | null },
     request: Request,
+    method: 'PASSWORD' | 'FIREBASE' | 'TELEGRAM' = 'PASSWORD',
   ): Promise<StepUpPayload | null> {
     const channels = this.requiredChannels(user.otpMode);
     if (channels.length === 0) return null;
@@ -95,7 +96,7 @@ export class SecurityService {
       }
     }
 
-    await this.recordLogin(user.id, 'OTP_CHALLENGE', 'PASSWORD', request, {
+    await this.recordLogin(user.id, 'OTP_CHALLENGE', method, request, {
       detail: `second factor required (${user.otpMode})`,
     });
     return {
@@ -109,8 +110,7 @@ export class SecurityService {
 
   /**
    * Verifies every required challenge and only then creates the session.
-   * A failure leaves all challenges unconsumed except the ones already verified, so a user who got
-   * the email code right and the Telegram code wrong does not have to start over.
+   * A failure consumes none of the supplied challenges; wrong guesses still count toward limits.
    */
   async completeStepUp(
     input: { challengeIds: string[]; codes: string[] },
@@ -135,25 +135,19 @@ export class SecurityService {
       throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'That challenge is not a login challenge' });
     }
 
-    for (const [index, challengeId] of input.challengeIds.entries()) {
-      const result = await this.otp.verify(challengeId, input.codes[index]);
-      if (!result.ok) {
-        await this.recordLogin(userId, 'OTP_FAILED', 'OTP', request, { detail: `${challenges[index].channel}: ${result.reason}` });
-        const messages: Record<string, string> = {
-          EXPIRED: 'That code has expired. Sign in again to get a new one.',
-          CONSUMED: 'That code has already been used.',
-          TOO_MANY_ATTEMPTS: 'Too many wrong codes for this challenge. Sign in again.',
-          MISMATCH: `Incorrect code. ${result.attemptsRemaining} attempt(s) left.`,
-          NOT_FOUND: 'Unknown verification challenge.',
-          COOLDOWN: 'Too many attempts. Wait a moment and try again.',
-        };
-        throw new UnauthorizedException({ code: 'OTP_INVALID', message: messages[result.reason], details: { attemptsRemaining: result.attemptsRemaining } });
-      }
-    }
-
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.deletedAt || user.status !== 'ACTIVE') {
       throw new ForbiddenException({ code: 'FORBIDDEN', message: 'This account is not active' });
+    }
+    const required = this.requiredChannels(user.otpMode);
+    const submitted = new Set(challenges.map((challenge) => challenge.channel));
+    if (!required.length || submitted.size !== challenges.length || required.length !== challenges.length || required.some((channel) => !submitted.has(channel))) {
+      throw new UnauthorizedException({ code: 'OTP_POLICY_MISMATCH', message: 'Provide every code required by your current security policy. Start sign-in again.' });
+    }
+    const result = await this.otp.verifyMany(input.challengeIds.map((challengeId, index) => ({ challengeId, code: input.codes[index] })));
+    if (!result.ok) {
+      await this.recordLogin(userId, 'OTP_FAILED', 'OTP', request, { detail: result.reason });
+      throw new UnauthorizedException({ code: 'OTP_INVALID', message: 'Verification failed. Check every code or restart sign-in if expired.', details: { reason: result.reason, attemptsRemaining: result.attemptsRemaining } });
     }
 
     const suspicious = await this.isSuspicious(userId, request);
@@ -211,7 +205,7 @@ export class SecurityService {
     // arrived, not whether the account exists.
     if (!user || user.deletedAt || user.status !== 'ACTIVE') return { requested: true };
     // Prefer the channel the user will actually read; fall back to email when Telegram is unlinked.
-    const channel: OtpChannel = user.otpMode === 'TELEGRAM' && user.telegramChatId ? 'TELEGRAM' : 'EMAIL';
+    const channel: OtpChannel = user.otpMode === 'TELEGRAM' && user.telegramChatId && user.telegramUserId && user.telegramLinkedAt ? 'TELEGRAM' : 'EMAIL';
     const delivery = await this.otp.issue({
       userId: user.id,
       email: user.email,
@@ -220,6 +214,10 @@ export class SecurityService {
       channel,
       ipAddress: request.ip ?? null,
       userAgent: request.get('user-agent') ?? null,
+    }).catch(() => {
+      // Do not disclose existing accounts via cooldown/configuration/delivery errors.
+      this.logger.warn('Password recovery delivery could not be completed');
+      return { delivered: false };
     });
     await appendAuditLog({
       userId: user.id,
@@ -405,7 +403,7 @@ export class SecurityService {
       otpMode: user.otpMode,
       emailVerified: user.emailVerified,
       telegram: {
-        linked: Boolean(user.telegramChatId),
+        linked: Boolean(user.telegramChatId && user.telegramUserId && user.telegramLinkedAt),
         connected: Boolean(user.telegramUserId),
         username: user.telegramUsername,
         chatId: user.telegramChatId ? maskTelegram(user.telegramChatId) : null,
@@ -423,7 +421,7 @@ export class SecurityService {
    * reason, because a half-configured factor locks the user out of their own account.
    */
   async setOtpMode(userId: string, mode: OtpMode) {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, telegramChatId: true } });
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, telegramChatId: true, telegramUserId: true, telegramLinkedAt: true } });
     if (!user) throw new NotFoundException({ code: 'NOT_FOUND', message: 'User not found' });
     const available = this.otp.channelsAvailable(user);
     if ((mode === 'EMAIL' || mode === 'DUAL') && !available.email) {
@@ -442,33 +440,11 @@ export class SecurityService {
 
   /** Step 1 of linking: send a code to the chat the user claims to own. */
   async startTelegramLink(userId: string, chatId: string, request: Request) {
-    const delivery = await this.otp.issue({ userId, email: '', telegramChatId: chatId, purpose: 'TELEGRAM_LINK', channel: 'TELEGRAM', ipAddress: request.ip ?? null, userAgent: request.get('user-agent') ?? null });
-    if (!delivery.delivered) {
-      throw new BadRequestException({ code: 'OTP_DELIVERY_FAILED', message: delivery.error ?? 'Could not message that chat. Send the bot a message first, then retry.' });
-    }
-    return { challengeId: delivery.challengeId, destination: delivery.destination, expiresAt: new Date(Date.now() + this.otp.ttlSeconds * 1000).toISOString() };
+    throw new BadRequestException({ code: 'TELEGRAM_BOT_LINK_REQUIRED', message: 'Use Connect Telegram and start the bot with the one-time link. Manual chat-ID linking is no longer supported.' });
   }
 
-  /** Step 2: the code proves control of the chat; only then is it stored on the account. */
   async completeTelegramLink(userId: string, challengeId: string, code: string, chatId: string) {
-    const challenge = await prisma.otpChallenge.findUnique({ where: { id: challengeId } });
-    if (!challenge || challenge.userId !== userId || challenge.purpose !== 'TELEGRAM_LINK') {
-      throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Unknown Telegram link challenge' });
-    }
-    const result = await this.otp.verify(challengeId, code);
-    if (!result.ok) throw new UnauthorizedException({ code: 'OTP_INVALID', message: `Code rejected (${result.reason})`, details: { attemptsRemaining: result.attemptsRemaining } });
-    const telegramUserId = /^\d+$/.test(chatId) ? chatId : null;
-    await prisma.$transaction(async (tx) => {
-      const existingChat = await tx.user.findFirst({ where: { telegramChatId: chatId, NOT: { id: userId } }, select: { id: true } });
-      if (existingChat) throw new BadRequestException({ code: 'TELEGRAM_ALREADY_LINKED', message: 'That Telegram chat is already linked to another ClipForge account.' });
-      if (telegramUserId) {
-        const existingIdentity = await tx.user.findFirst({ where: { OR: [{ telegramUserId }, { telegramLoginId: telegramUserId }], NOT: { id: userId } }, select: { id: true } });
-        if (existingIdentity) throw new BadRequestException({ code: 'TELEGRAM_ALREADY_LINKED', message: 'That Telegram account is already linked to another ClipForge account.' });
-      }
-      await tx.user.update({ where: { id: userId }, data: { telegramChatId: chatId, telegramUserId, telegramLinkedAt: new Date() } });
-    }, { isolationLevel: 'Serializable' });
-    await appendAuditLog({ userId, action: 'AUTH_TELEGRAM_LINKED', summary: `Telegram chat linked (…${chatId.slice(-4)})` }).catch(() => undefined);
-    return { linked: true, chatId: maskTelegram(chatId) };
+    throw new BadRequestException({ code: 'TELEGRAM_BOT_LINK_REQUIRED', message: 'Use Connect Telegram and start the bot with the one-time link.' });
   }
 
   async unlinkTelegram(userId: string) {

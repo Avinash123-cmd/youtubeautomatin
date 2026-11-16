@@ -1,0 +1,4 @@
+# Fast, isolated HTTP/parser tests. Heavy Whisper/model downloads are not required for this suite.
+-r ../../services/video-processor/requirements.txt
+httpx==0.28.1
+requests==2.32.3

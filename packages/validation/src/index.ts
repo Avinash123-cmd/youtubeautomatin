@@ -24,6 +24,13 @@ export const paginationSchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+export const sourceListQuerySchema = paginationSchema.extend({
+  search: z.string().trim().max(200).optional(),
+  status: z.enum(['INITIATED', 'UPLOADED', 'VALIDATED', 'REJECTED', 'ARCHIVED']).optional(),
+  sort: z.enum(['newest', 'oldest', 'largest']).default('newest'),
+});
+export type SourceListQuery = z.infer<typeof sourceListQuerySchema>;
+
 // --------------------------------- auth -----------------------------------
 
 export const bootstrapSchema = z.object({

@@ -18,6 +18,8 @@ export const envSchema = z.object({
     .optional()
     .transform((value) => value === 'true' || value === '1'),
   API_PORT: z.coerce.number().int().positive(),
+  WORKER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(1000).max(300000).default(30000),
+  HEALTHCHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
   ALLOWED_ORIGINS: z.string().min(1),
   TIMEZONE: z.string().min(3),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),

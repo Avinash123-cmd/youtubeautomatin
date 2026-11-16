@@ -1,0 +1,19 @@
+# Optional overlay: use with docker-compose.prod.yml or docker-compose.dev.yml.
+# No external ports or credentials; join the application Compose network.
+services:
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    command: ['--config.file=/etc/blackbox/blackbox.yml']
+    volumes: ['./infrastructure/monitoring/blackbox.yml:/etc/blackbox/blackbox.yml:ro']
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.retention.time=15d']
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on: [blackbox-exporter]
+    restart: unless-stopped
+volumes:
+  prometheus-data:

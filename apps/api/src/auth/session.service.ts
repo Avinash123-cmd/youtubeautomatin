@@ -92,7 +92,7 @@ export class SessionService {
     });
     if (!session) return null;
     if (session.revokedAt) return null;
-    if (session.expiresAt.getTime() < Date.now()) return null;
+    if (session.expiresAt.getTime() <= Date.now()) return null;
     if (session.user.status !== 'ACTIVE' || session.user.deletedAt) return null;
     const membership = session.user.memberships[0];
     if (!membership) return null;

@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import './load-env';
+import { corsOptions } from './common/origin-policy';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import compression from 'compression';
@@ -32,33 +33,7 @@ async function bootstrap() {
   app.useBodyParser('json', { limit: '2mb' });
   app.useBodyParser('urlencoded', { limit: '2mb', extended: true });
 
-  // ALLOWED_ORIGINS is an explicit allow-list. Entries may contain a single '*' wildcard
-  // (e.g. https://*.preview.example.com) so an operator can permit a preview host deliberately —
-  // there is no implicit "allow anything" mode.
-  const allowedOrigins = env.ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean);
-  const originAllowed = (origin: string) =>
-    allowedOrigins.some((entry) => {
-      if (!entry.includes('*')) return entry === origin;
-      const [entryScheme, entryHost] = entry.split('://');
-      let parsed: URL;
-      try {
-        parsed = new URL(origin);
-      } catch {
-        return false;
-      }
-      if (entryScheme !== parsed.protocol.replace(':', '')) return false;
-      const [hostPrefix, hostSuffix] = (entryHost ?? '').split('*');
-      return parsed.host.startsWith(hostPrefix) && parsed.host.endsWith(hostSuffix);
-    });
-  app.enableCors({
-    origin: (origin, callback) => {
-      if (!origin || originAllowed(origin)) return callback(null, true);
-      return callback(new Error(`Origin ${origin} is not allowed by CORS policy`), false);
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'x-csrf-token', 'x-request-id'],
-  });
+  app.enableCors(corsOptions(env.ALLOWED_ORIGINS));
 
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalInterceptors(new RequestIdInterceptor());

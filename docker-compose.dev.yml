@@ -6,6 +6,8 @@ x-api-env: &api-env
   NODE_ENV: development
   APP_URL: ${APP_URL:-http://localhost:3000}
   API_PORT: '4000'
+  HEALTHCHECK_TIMEOUT_MS: ${HEALTHCHECK_TIMEOUT_MS:-5000}
+  WORKER_SHUTDOWN_GRACE_MS: ${WORKER_SHUTDOWN_GRACE_MS:-30000}
   API_INTERNAL_URL: http://api:4000
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
   TIMEZONE: ${TIMEZONE:?set TIMEZONE explicitly}
@@ -115,6 +117,7 @@ services:
     restart: unless-stopped
 
   worker-ai:
+    stop_grace_period: 45s
     build:
       context: .
       dockerfile: infrastructure/docker/api.Dockerfile
@@ -125,6 +128,7 @@ services:
     restart: unless-stopped
 
   worker-render:
+    stop_grace_period: 45s
     build:
       context: .
       dockerfile: infrastructure/docker/api.Dockerfile
@@ -135,6 +139,7 @@ services:
     restart: unless-stopped
 
   worker-publish:
+    stop_grace_period: 45s
     build:
       context: .
       dockerfile: infrastructure/docker/api.Dockerfile
@@ -145,6 +150,7 @@ services:
     restart: unless-stopped
 
   worker-scheduler:
+    stop_grace_period: 45s
     build:
       context: .
       dockerfile: infrastructure/docker/api.Dockerfile
@@ -155,6 +161,7 @@ services:
     restart: unless-stopped
 
   worker-recovery:
+    stop_grace_period: 45s
     build:
       context: .
       dockerfile: infrastructure/docker/api.Dockerfile

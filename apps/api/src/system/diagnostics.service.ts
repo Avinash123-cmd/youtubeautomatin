@@ -42,13 +42,13 @@ export class DiagnosticsService {
     ] = await Promise.all([
       this.system.readiness(),
       this.queues.depths(),
-      this.stuckJobs(),
-      this.stuckPublishingJobs(),
+      this.stuckJobs(workspaceId),
+      this.stuckPublishingJobs(workspaceId),
       this.outboxBacklog(),
       this.expiringCredentials(workspaceId),
       this.recentFailedJobs(workspaceId),
       this.diskUsage(),
-      this.mediaIntegrity(),
+      this.mediaIntegrity(workspaceId),
       prisma.systemHealthEvent.findMany({ orderBy: { observedAt: 'desc' }, take: 10 }),
     ]);
 
@@ -182,13 +182,14 @@ export class DiagnosticsService {
     return findings;
   }
 
-  private async stuckJobs(): Promise<DiagnosticFinding> {
+  private async stuckJobs(workspaceId: string): Promise<DiagnosticFinding> {
     // A job is stuck when it is not terminal, holds no live lease, and has not been touched since
     // the lease window. The recovery worker should catch these within one sweep; if one survives a
     // sweep, something is wrong with recovery itself.
-    const cutoff = new Date(Date.now() - Math.max(env.JOB_LEASE_SECONDS * 2, 5 * MINUTE));
+    const cutoff = new Date(Date.now() - Math.max(env.JOB_LEASE_SECONDS * 2000, 5 * MINUTE));
     const jobs = await prisma.processingJob.findMany({
       where: {
+        workspaceId,
         status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED', 'NEEDS_CONFIGURATION'] },
         updatedAt: { lt: cutoff },
         OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: new Date() } }],
@@ -222,10 +223,10 @@ export class DiagnosticsService {
     );
   }
 
-  private async stuckPublishingJobs(): Promise<DiagnosticFinding> {
+  private async stuckPublishingJobs(workspaceId: string): Promise<DiagnosticFinding> {
     const cutoff = new Date(Date.now() - 10 * MINUTE);
     const jobs = await prisma.publishingJob.findMany({
-      where: { status: { in: ['UPLOADING', 'AWAITING_PLATFORM'] }, updatedAt: { lt: cutoff } },
+      where: { workspaceId, status: { in: ['UPLOADING', 'AWAITING_PLATFORM'] }, updatedAt: { lt: cutoff } },
       orderBy: { updatedAt: 'asc' },
       take: 20,
       select: { id: true, platform: true, status: true, attempt: true, maxAttempts: true, updatedAt: true },
@@ -315,14 +316,16 @@ export class DiagnosticsService {
    * the clip list renders, the video 404s. Checking every object would mean an S3 HEAD per row, so
    * the newest 25 variants and 10 sources are sampled — recent breakage is what an operator needs.
    */
-  private async mediaIntegrity(): Promise<DiagnosticFinding> {
+  private async mediaIntegrity(workspaceId: string): Promise<DiagnosticFinding> {
     const [variants, sources] = await Promise.all([
       prisma.clipVariant.findMany({
+        where: { clip: { workspaceId } },
         orderBy: { createdAt: 'desc' },
         take: 25,
         select: { id: true, createdAt: true, mediaAsset: { select: { storageKey: true } } },
       }),
       prisma.sourceVideo.findMany({
+        where: { workspaceId, deletedAt: null },
         orderBy: { createdAt: 'desc' },
         take: 10,
         select: { id: true, createdAt: true, storageKey: true },

@@ -11,9 +11,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, Section, Skeleton, Toast } from '@/components/ui';
+import { Badge, Card, CardHeader, EmptyState, ErrorState, Section, Skeleton, Toast } from '@/components/ui';
 import {
-  useCompleteTelegramLink,
   useGenerateRecoveryCodes,
   useLoginHistory,
   useLogout,
@@ -21,7 +20,7 @@ import {
   useRevokeSession,
   useSecurityOverview,
   useSetOtpMode,
-  useStartTelegramLink,
+  useStartTelegramConnection,
   useUnlinkTelegram,
   type SecurityOverview,
 } from '@/lib/hooks';
@@ -55,13 +54,10 @@ export default function SecurityPage() {
   const revoke = useRevokeSession();
   const revokeAll = useRevokeAllSessions();
   const generate = useGenerateRecoveryCodes();
-  const startLink = useStartTelegramLink();
-  const completeLink = useCompleteTelegramLink();
+  const connection = useStartTelegramConnection();
   const unlink = useUnlinkTelegram();
 
-  const [chatId, setChatId] = useState('');
-  const [linkCode, setLinkCode] = useState('');
-  const [linkChallenge, setLinkChallenge] = useState<string | null>(null);
+
   const [notice, setNotice] = useState<string | null>(null);
 
   if (overview.isLoading) {
@@ -142,7 +138,7 @@ export default function SecurityPage() {
           <CardHeader
             title="Telegram"
             description="Where sign-in codes and job notifications go."
-            action={<Badge tone={data.telegram.linked ? 'positive' : 'neutral'}>{data.telegram.linked ? 'Linked' : 'Not linked'}</Badge>}
+            action={<Badge tone={data.telegram.linked ? 'positive' : 'neutral'}>{data.telegram.linked ? 'Telegram Connected ✓' : connection.data ? 'Connection pending' : 'Not connected'}</Badge>}
           />
           {data.telegram.linked ? (
             <div className="space-y-3">
@@ -157,7 +153,7 @@ export default function SecurityPage() {
                 disabled={unlink.isPending}
                 onClick={() => unlink.mutate(undefined, { onSuccess: () => setNotice('Telegram unlinked.') })}
               >
-                {unlink.isPending ? 'Unlinking…' : 'Unlink chat'}
+                {unlink.isPending ? 'Unlinking…' : 'Disconnect Telegram'}
               </button>
               <p className="text-[11.5px] leading-relaxed text-ink-faint">
                 Unlinking downgrades a Telegram or dual policy rather than locking you out.
@@ -165,67 +161,17 @@ export default function SecurityPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              <Field label="Telegram chat id" hint="Send your bot a message, then use @userinfobot (or your group's id) to read it." required>
-                <input className="input font-mono" value={chatId} onChange={(event) => setChatId(event.target.value.trim())} placeholder="-1001234567890" />
-              </Field>
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={!chatId || startLink.isPending}
-                onClick={() =>
-                  startLink.mutate(chatId, {
-                    onSuccess: (result) => {
-                      setLinkChallenge(result.challengeId);
-                      setNotice('A code was sent to that chat.');
-                    },
-                  })
-                }
-              >
-                {startLink.isPending ? 'Sending code…' : 'Send linking code'}
+              <p className="text-sm text-ink-soft">Connect your private Telegram chat before enabling codes. Open the bot and press Start; a bot cannot contact you before you do.</p>
+              <button type="button" className="btn-secondary" disabled={connection.isPending} onClick={() => connection.mutate()}>
+                {connection.isPending ? 'Preparing link…' : 'Connect Telegram'}
               </button>
-              {startLink.error ? (
-                <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-[12.5px] leading-relaxed text-danger">
-                  {startLink.error.message}
-                </p>
-              ) : null}
-              {linkChallenge ? (
-                <div className="space-y-2 border-t border-line pt-3">
-                  <Field label="Code from Telegram" required>
-                    <input
-                      className="input font-mono tracking-[0.3em]"
-                      inputMode="numeric"
-                      maxLength={6}
-                      value={linkCode}
-                      onChange={(event) => setLinkCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="000000"
-                    />
-                  </Field>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    disabled={linkCode.length !== 6 || completeLink.isPending}
-                    onClick={() =>
-                      completeLink.mutate(
-                        { challengeId: linkChallenge, code: linkCode, chatId },
-                        {
-                          onSuccess: () => {
-                            setLinkChallenge(null);
-                            setLinkCode('');
-                            setNotice('Telegram linked.');
-                          },
-                        },
-                      )
-                    }
-                  >
-                    {completeLink.isPending ? 'Confirming…' : 'Confirm link'}
-                  </button>
-                  {completeLink.error ? (
-                    <p role="alert" className="text-[12.5px] text-danger">
-                      {completeLink.error.message}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
+              {connection.data ? <div className="space-y-2 rounded-lg border border-line p-3">
+                <p role="status" className="text-sm">Connection pending</p>
+                <a className="btn-primary" href={connection.data.deepLink} target="_blank" rel="noopener noreferrer">Open Telegram bot</a>
+                <p className="text-xs text-ink-faint">Expires {formatWhen(connection.data.expiresAt)}. Never share this one-time link.</p>
+                <button type="button" className="btn-secondary" onClick={() => void overview.refetch()}>Verify Telegram</button>
+              </div> : null}
+              {connection.error ? <p role="alert" className="text-sm text-danger">{connection.error.message}</p> : null}
             </div>
           )}
         </Card>

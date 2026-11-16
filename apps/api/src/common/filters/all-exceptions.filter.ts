@@ -56,7 +56,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         }
       }
     } else if (exception instanceof Error) {
-      message = exception.message;
+      // Never expose database, network or provider exception text to clients.
       workerLogger.child({ requestId }).error('unhandled exception', exception.stack);
     }
 

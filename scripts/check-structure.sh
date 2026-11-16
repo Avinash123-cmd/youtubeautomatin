@@ -28,11 +28,13 @@ REQUIRED_DIRS=(
   packages/platform-connectors/src
   services/ai-engine/app services/video-processor/app
   tests/unit tests/integration tests/e2e tests/python tests/fixtures
-  infrastructure/docker infrastructure/scripts docs scripts artifacts/ui
+  infrastructure/docker infrastructure/scripts docs scripts
 )
 for d in "${REQUIRED_DIRS[@]}"; do
   if [ -d "$d" ]; then ok "exists  $d"; else bad "missing directory: $d"; fi
 done
+
+# artifacts/ui is regenerable, ignored evidence; a clean checkout must not require it.
 
 # --------------------------------------------------------------------------- 2. area READMEs
 section "2. every area explains itself"
@@ -45,7 +47,7 @@ done
 # --------------------------------------------------------------------------- 3. root stays tidy
 section "3. repository root holds only entry points"
 ALLOWED_ROOT="README.md package.json package-lock.json tsconfig.base.json tsconfig.json
-docker-compose.dev.yml docker-compose.prod.yml render.yaml render.pipeline.yaml
+docker-compose.dev.yml docker-compose.prod.yml docker-compose.monitoring.yml render.yaml render.pipeline.yaml
 .env.example .gitignore .dockerignore .bootstrap-token.local
 apps packages services tests infrastructure scripts docs artifacts node_modules
 .next local-storage .git .env .venv .ruff_cache .pytest_cache"
@@ -137,7 +139,7 @@ done
 
 # --------------------------------------------------------------------------- 9. deployment files
 section "9. deployment files point at files that exist"
-for f in docker-compose.dev.yml docker-compose.prod.yml render.yaml render.pipeline.yaml; do
+for f in docker-compose.dev.yml docker-compose.prod.yml docker-compose.monitoring.yml render.yaml render.pipeline.yaml; do
   [ -f "$f" ] || { bad "missing $f"; continue; }
   ok "$f"
 done

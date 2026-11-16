@@ -51,7 +51,7 @@ export async function GET() {
     error = (cause as Error)?.name === 'TimeoutError' ? 'Timed out after 5s' : (cause as Error)?.message ?? 'Request failed';
   }
   const latencyMs = Date.now() - started;
-  const ok = status !== null && status >= 200 && status < 300;
+  const ok = identity === 'clipforge' && status !== null && status >= 200 && status < 300;
 
   return NextResponse.json(
     {

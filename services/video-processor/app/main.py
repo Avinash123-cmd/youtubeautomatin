@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
+import subprocess
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from fastapi.responses import JSONResponse
 
 from . import audio as audio_mod
 from . import framing as framing_mod
@@ -32,7 +35,7 @@ FFPROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     if not API_KEY:
         raise HTTPException(status_code=503, detail={"code": "CONFIGURATION_REQUIRED", "message": "VIDEO_PROCESSOR_API_KEY is not set"})
-    if not x_api_key or x_api_key != API_KEY:
+    if not x_api_key or not secrets.compare_digest(x_api_key.encode('utf-8'), API_KEY.encode('utf-8')):
         raise HTTPException(status_code=401, detail={"code": "UNAUTHENTICATED", "message": "Invalid service API key"})
 
 
@@ -55,16 +58,17 @@ class ValidateRequest(BaseModel):
 
 
 class RenderRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     source_path: str
     output_path: str
-    start: float
-    end: float
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
     words: list[dict] = Field(default_factory=list)
     subtitle_style: dict
-    output_width: int
-    output_height: int
-    fps: int
-    bitrate_kbps: int
+    output_width: int = Field(ge=2, le=7680)
+    output_height: int = Field(ge=2, le=7680)
+    fps: int = Field(ge=1, le=120)
+    bitrate_kbps: int = Field(ge=128, le=100000)
     video_codec: str = "h264"
     framing_mode: str
     framing_fallback: str
@@ -78,16 +82,35 @@ class RenderRequest(BaseModel):
     background_music_gain_db: float | None = None
 
 
-@app.get("/health")
-def health() -> dict:
-    import subprocess
+    @model_validator(mode="after")
+    def validate_render_window(self):
+        if self.end <= self.start:
+            raise ValueError("end must be greater than start")
+        if self.output_width % 2 or self.output_height % 2:
+            raise ValueError("output dimensions must be even for yuv420p")
+        return self
 
+
+@app.get("/live")
+def live() -> dict:
+    return {"status": "ok", "service": "clipforge-video-processor"}
+
+
+@app.get("/health")
+def health():
     try:
-        version = subprocess.run([FFMPEG, "-version"], capture_output=True, text=True, timeout=20).stdout.splitlines()[0]
-        probe_version = subprocess.run([FFPROBE, "-version"], capture_output=True, text=True, timeout=20).stdout.splitlines()[0]
-        return {"status": "ok", "ffmpeg": version, "ffprobe": probe_version, "apiKeyConfigured": bool(API_KEY)}
-    except Exception as exc:  # FFmpeg missing means the service cannot work at all
-        return {"status": "down", "error": str(exc), "apiKeyConfigured": bool(API_KEY)}
+        tools = {}
+        for name, executable in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE)):
+            result = subprocess.run([executable, "-version"], capture_output=True, text=True, timeout=2, check=True)
+            lines = result.stdout.splitlines()
+            if not lines:
+                raise RuntimeError("Media tool returned no version information")
+            tools[name] = lines[0]
+        status = "ok" if API_KEY else "unconfigured"
+        return JSONResponse(status_code=200 if status == "ok" else 503, content={"status": status, **tools, "apiKeyConfigured": bool(API_KEY)})
+    except Exception:
+        # Paths and subprocess errors belong in operator logs, not public probe responses.
+        return JSONResponse(status_code=503, content={"status": "down", "error": "Required media tools are unavailable", "apiKeyConfigured": bool(API_KEY)})
 
 
 @app.post("/probe", dependencies=[Depends(require_api_key)])

@@ -2,6 +2,7 @@
  * Typed clients for the Python services. Every call has a timeout and surfaces
  * the service's structured error instead of swallowing it.
  */
+import { z } from 'zod';
 import { env } from '../common/env';
 
 export class ServiceCallError extends Error {
@@ -24,6 +25,7 @@ async function post<T>(
   path: string,
   body: unknown,
   timeoutMs: number,
+  validate?: (value: unknown) => T,
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -49,6 +51,12 @@ async function post<T>(
         detail,
       );
     }
+    if (validate) {
+      try { return validate(parsed); } catch {
+        throw new ServiceCallError('Service returned an invalid success payload', service, 502, 'INVALID_SERVICE_RESPONSE', false);
+      }
+    }
+    if (typeof parsed !== 'object' || parsed === null || 'raw' in parsed) throw new ServiceCallError('Service returned an invalid JSON payload', service, 502, 'INVALID_SERVICE_RESPONSE', false);
     return parsed as T;
   } catch (error) {
     if (error instanceof ServiceCallError) throw error;
@@ -168,12 +176,24 @@ export const aiEngine = {
   },
 };
 
+// Runtime validation at the service trust boundary; TypeScript alone cannot validate Python JSON.
+const renderResponseSchema = z.object({
+  outputPath: z.string().min(1), durationSeconds: z.number().finite().positive(),
+  width: z.number().int().positive(), height: z.number().int().positive(), fps: z.number().finite().positive(),
+  sizeBytes: z.number().int().positive(), videoCodec: z.string().min(1), audioCodec: z.string().min(1),
+  bitrateKbps: z.number().finite().nonnegative(),
+  framing: z.object({ mode: z.string(), trackedFrames: z.number().nonnegative(), totalFrames: z.number().nonnegative(), coverage: z.number().min(0).max(1), fallbackUsed: z.boolean(), note: z.string() }).passthrough(),
+  subtitleWordCount: z.number().int().nonnegative(), subtitleStats: z.record(z.unknown()), audio: z.record(z.unknown()),
+  // A render with validation errors must never reach storage or a READY database transition.
+  validationErrors: z.array(z.string()).max(0),
+}).passthrough();
+
 export const videoProcessor = {
   probe(path: string) {
     return post<ProbeResponse>('video-processor', env.VIDEO_PROCESSOR_URL, env.VIDEO_PROCESSOR_API_KEY, '/probe', { path }, 120_000);
   },
   render(body: unknown, timeoutMs = 60 * 60_000) {
-    return post<RenderResponse>('video-processor', env.VIDEO_PROCESSOR_URL, env.VIDEO_PROCESSOR_API_KEY, '/render', body, timeoutMs);
+    return post<RenderResponse>('video-processor', env.VIDEO_PROCESSOR_URL, env.VIDEO_PROCESSOR_API_KEY, '/render', body, timeoutMs, (value) => renderResponseSchema.parse(value));
   },
   audioAnalysis(path: string, start?: number, duration?: number) {
     return post<Record<string, unknown>>(

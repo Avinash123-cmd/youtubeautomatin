@@ -10,6 +10,8 @@ import { describeAuthError, validateCredentials } from '@/lib/auth-messages';
 import { GoogleSignInError, signInWithGoogle } from '@/lib/firebase-client';
 import {
   useBootstrap,
+  usePendingStepUp,
+  useCancelStepUp,
   useCompleteStepUp,
   useFirebaseLogin,
   useLogin,
@@ -53,6 +55,9 @@ export default function LoginPage() {
   const [telegramError, setTelegramError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const stepUp = useCompleteStepUp();
+  const pendingStepUp = usePendingStepUp();
+  const cancelStepUp = useCancelStepUp();
+  const [resentChallenges, setResentChallenges] = useState<Record<string, { challengeId: string; destination: string; expiresAt: string }>>({});
   const resend = useResendOtp();
   // One input per required channel: a DUAL policy returns two challenges and both must pass.
   const [codes, setCodes] = useState<Record<string, string>>({});
@@ -80,7 +85,8 @@ export default function LoginPage() {
 
   // The password was right but the account has a second factor. No session exists yet, so this is a
   // distinct screen: it must not look like a fresh login, and it must not offer a way to skip.
-  const challenge = login.data && 'otpRequired' in login.data ? login.data : null;
+  const originalChallenge = login.data && 'otpRequired' in login.data ? login.data : firebaseLogin.data && 'otpRequired' in firebaseLogin.data ? firebaseLogin.data : pendingStepUp.data?.stepUp;
+  const challenge = originalChallenge ? { ...originalChallenge, challenges: originalChallenge.challenges.map((item) => ({ ...item, ...resentChallenges[item.channel] })) } : null;
   if (challenge) {
     const submitCodes = (event: React.FormEvent) => {
       event.preventDefault();
@@ -97,7 +103,7 @@ export default function LoginPage() {
             <div className="mb-5">
               <h2 className="text-[19px] font-semibold tracking-tight text-ink">Two-step verification</h2>
               <p className="mt-1 text-[13px] text-ink-soft">
-                Your password was accepted. Enter the code{challenge.challenges.length > 1 ? 's' : ''} we just sent to finish signing in.
+                Your identity was verified. Enter the code{challenge.challenges.length > 1 ? 's' : ''} we just sent to finish signing in.
               </p>
             </div>
 
@@ -122,8 +128,11 @@ export default function LoginPage() {
                     <button
                       type="button"
                       className="btn-secondary shrink-0 whitespace-nowrap"
-                      disabled={resend.isPending}
-                      onClick={() => resend.mutate(item.challengeId)}
+                      disabled={resend.isPending || stepUp.isPending}
+                      onClick={() => resend.mutate(item.challengeId, { onSuccess: (result) => {
+                        setResentChallenges((state) => ({ ...state, [item.channel]: result.challenge }));
+                        setCodes((state) => ({ ...state, [result.challenge.challengeId]: '' }));
+                      } })}
                     >
                       {resend.isPending ? 'Sending…' : 'Resend'}
                     </button>
@@ -134,7 +143,7 @@ export default function LoginPage() {
               {challenge.deliveryProblem ? (
                 <div role="alert" className="rounded-lg bg-caution-soft px-3 py-2.5 text-[12.5px] leading-relaxed text-caution">
                   {challenge.deliveryProblem.channel} delivery failed: {challenge.deliveryProblem.error}. A code that was not
-                  delivered cannot be guessed — fix the channel, or use a recovery code from your Security page.
+                  delivered cannot be used. Try resending, use account recovery, or contact your administrator.
                 </div>
               ) : null}
 
@@ -154,12 +163,19 @@ export default function LoginPage() {
               <button className="btn-primary w-full" type="submit" disabled={stepUp.isPending}>
                 {stepUp.isPending ? 'Verifying…' : 'Verify and sign in'}
               </button>
+              <Link href="/forgot-password" className="block text-center text-[12.5px] text-accent hover:underline">Use account recovery</Link>
+              {cancelStepUp.error ? <p role="alert" className="text-sm text-danger">{cancelStepUp.error.message}</p> : null}
               <button
+                disabled={cancelStepUp.isPending}
                 type="button"
                 className="w-full text-[12.5px] text-ink-soft hover:text-ink hover:underline"
                 onClick={() => {
-                  login.reset();
-                  setCodes({});
+                  cancelStepUp.mutate(undefined, { onSuccess: () => {
+                    login.reset();
+                    firebaseLogin.reset();
+                    setCodes({});
+                    setResentChallenges({});
+                  } });
                 }}
               >
                 Use a different account
@@ -176,6 +192,8 @@ export default function LoginPage() {
     setTouched({ email: true, password: true });
     if (Object.keys(credentials).length > 0) return;
     if (mode === 'login') {
+      setResentChallenges({});
+      setCodes({});
       login.mutate(
         { email: email.trim(), password },
         {
@@ -200,7 +218,7 @@ export default function LoginPage() {
     setGoogleError(null);
     try {
       const idToken = await signInWithGoogle(google.config);
-      firebaseLogin.mutate({ idToken }, { onSuccess: () => router.replace('/') });
+      firebaseLogin.mutate({ idToken }, { onSuccess: (result) => { if (!('otpRequired' in result)) router.replace('/'); } });
     } catch (error) {
       setGoogleError(error instanceof GoogleSignInError ? error.message : (error as Error).message);
     }

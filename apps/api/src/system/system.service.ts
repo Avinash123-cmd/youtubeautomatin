@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { boundedProbe, reportedServiceStatus } from '../common/health-probe';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigurationService, prisma } from '@clipforge/database';
 import { env } from '../common/env';
@@ -26,13 +28,12 @@ export class SystemService {
   async databaseHealth(): Promise<ComponentHealth> {
     const started = Date.now();
     try {
-      const [{ count }] = await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT count(*)::bigint AS count FROM "ProcessingJob"`;
+      await boundedProbe(() => prisma.$queryRaw`SELECT 1 FROM "ProcessingJob" LIMIT 1`, env.HEALTHCHECK_TIMEOUT_MS);
       return {
         component: 'postgres',
         status: 'healthy',
         message: 'Query succeeded',
         latencyMs: Date.now() - started,
-        details: { processingJobs: Number(count) },
       };
     } catch (error) {
       return { component: 'postgres', status: 'down', message: (error as Error).message };
@@ -42,7 +43,7 @@ export class SystemService {
   async redisHealth(): Promise<ComponentHealth> {
     const started = Date.now();
     try {
-      const pong = await this.redis.client.ping();
+      const pong = await boundedProbe(() => this.redis.client.ping(), env.HEALTHCHECK_TIMEOUT_MS);
       return { component: 'redis', status: pong === 'PONG' ? 'healthy' : 'degraded', message: `PING -> ${pong}`, latencyMs: Date.now() - started };
     } catch (error) {
       return { component: 'redis', status: 'down', message: (error as Error).message };
@@ -51,12 +52,11 @@ export class SystemService {
 
   async storageHealth(): Promise<ComponentHealth> {
     const driver = this.storage.driver;
+    const key = `health/${randomUUID()}.txt`;
     try {
-      const key = `health/${new Date().toISOString().slice(0, 10)}.txt`;
-      await this.storage.putBuffer(key, Buffer.from('clipforge storage probe'), 'text/plain');
-      const exists = await this.storage.exists(key);
-      await this.storage.delete(key);
-      const publicCheck = await this.storage.expectPublicHttps();
+      await boundedProbe(() => this.storage.putBuffer(key, Buffer.from('clipforge storage probe'), 'text/plain'), env.HEALTHCHECK_TIMEOUT_MS);
+      const exists = await boundedProbe(() => this.storage.exists(key), env.HEALTHCHECK_TIMEOUT_MS);
+      const publicCheck = await boundedProbe(() => this.storage.expectPublicHttps(), env.HEALTHCHECK_TIMEOUT_MS);
       return {
         component: 'storage',
         status: exists ? 'healthy' : 'degraded',
@@ -65,23 +65,24 @@ export class SystemService {
       };
     } catch (error) {
       return { component: 'storage', status: 'down', message: (error as Error).message, details: { driver } };
+    } finally {
+      await boundedProbe(() => this.storage.delete(key), env.HEALTHCHECK_TIMEOUT_MS).catch(() => undefined);
     }
   }
 
   async aiEngineHealth(): Promise<ComponentHealth> {
     const started = Date.now();
     try {
-      const response = await fetch(`${env.AI_ENGINE_URL}/health`, { headers: { 'x-api-key': env.AI_ENGINE_API_KEY } });
-      const body = (await response.json()) as { status?: string; geminiConfigured?: boolean; whisperModel?: string };
-      const geminiOk = body.geminiConfigured === true;
+      const response = await fetch(`${env.AI_ENGINE_URL}/health`, { headers: { 'x-api-key': env.AI_ENGINE_API_KEY }, signal: AbortSignal.timeout(env.HEALTHCHECK_TIMEOUT_MS) });
+      const body = (await response.json()) as { status?: string; apiKeyConfigured?: boolean; geminiConfigured?: boolean; whisperModel?: string; provider?: string; testMode?: boolean };
+      const geminiOk = body.geminiConfigured === true && body.provider !== 'fixture' && body.testMode !== true;
+      const status = reportedServiceStatus(response.ok, body);
       return {
         component: 'ai-engine',
-        status: response.ok ? (geminiOk ? 'healthy' : 'unconfigured') : 'down',
-        message: response.ok
-          ? geminiOk
-            ? `Ready (whisper=${body.whisperModel})`
-            : 'Service is running but GEMINI_API_KEY/model configuration is missing'
-          : `HTTP ${response.status}`,
+        status: status === 'healthy' ? (geminiOk ? 'healthy' : 'unconfigured') : status,
+        message: status === 'healthy' && geminiOk
+          ? `Configured prerequisites (whisper=${body.whisperModel}); provider execution is checked by jobs`
+          : `AI prerequisites unavailable (${body.status ?? 'invalid response'}, HTTP ${response.status})`,
         latencyMs: Date.now() - started,
         details: body as Record<string, unknown>,
       };
@@ -93,12 +94,12 @@ export class SystemService {
   async videoProcessorHealth(): Promise<ComponentHealth> {
     const started = Date.now();
     try {
-      const response = await fetch(`${env.VIDEO_PROCESSOR_URL}/health`, { headers: { 'x-api-key': env.VIDEO_PROCESSOR_API_KEY } });
-      const body = (await response.json()) as { ffmpeg?: string; ffprobe?: string };
+      const response = await fetch(`${env.VIDEO_PROCESSOR_URL}/health`, { headers: { 'x-api-key': env.VIDEO_PROCESSOR_API_KEY }, signal: AbortSignal.timeout(env.HEALTHCHECK_TIMEOUT_MS) });
+      const body = (await response.json()) as { status?: string; apiKeyConfigured?: boolean; ffmpeg?: string; ffprobe?: string };
       return {
         component: 'video-processor',
-        status: response.ok ? 'healthy' : 'down',
-        message: response.ok ? `FFmpeg ${body.ffmpeg ?? 'unknown'}` : `HTTP ${response.status}`,
+        status: reportedServiceStatus(response.ok, body),
+        message: reportedServiceStatus(response.ok, body) === 'healthy' ? `FFmpeg ${body.ffmpeg ?? 'unknown'}` : `Media processor unavailable (${body.status ?? 'invalid response'}, HTTP ${response.status})`,
         latencyMs: Date.now() - started,
         details: body as Record<string, unknown>,
       };
@@ -133,42 +134,48 @@ export class SystemService {
   /** Worker presence is derived from Redis heartbeats renewed by each worker. */
   async workers(): Promise<{ workers: Array<{ role: string; workerId: string; lastHeartbeatAgoSeconds: number; alive: boolean; concurrency?: number }> }> {
     const pattern = this.redis.key('worker', '*');
-    const keys = await this.redis.client.keys(pattern);
+    let cursor = '0';
+    let scans = 0;
     const workers = [];
-    for (const key of keys) {
-      const raw = await this.redis.client.get(key);
-      if (!raw) continue;
-      const parsed = JSON.parse(raw) as { role: string; workerId: string; concurrency?: number; updatedAt: string };
-      const age = (Date.now() - new Date(parsed.updatedAt).getTime()) / 1000;
-      workers.push({
-        // Heartbeats are written as `worker:<role>`; strip the prefix so both the API and the UI
-        // speak in roles ("render", not "worker:render"). A prefix mismatch here once made the
-        // diagnostics report every healthy worker as missing.
-        role: parsed.role.replace(/^worker:/, ''),
-        workerId: parsed.workerId,
-        concurrency: parsed.concurrency,
-        lastHeartbeatAgoSeconds: Math.round(age),
-        alive: age < 60,
-      });
-    }
+    do {
+      scans += 1;
+      const [next, keys] = await boundedProbe(() => this.redis.client.scan(cursor, 'MATCH', pattern, 'COUNT', 100), env.HEALTHCHECK_TIMEOUT_MS);
+      cursor = next;
+      if (!keys.length) continue;
+      const values = await boundedProbe(() => this.redis.client.mget(...keys), env.HEALTHCHECK_TIMEOUT_MS);
+      for (const raw of values) {
+        if (!raw) continue;
+        try {
+          const parsed = JSON.parse(raw) as { role?: unknown; workerId?: unknown; concurrency?: number; updatedAt?: string };
+          if (typeof parsed.role !== 'string' || typeof parsed.workerId !== 'string' || !parsed.updatedAt) continue;
+          const age = (Date.now() - Date.parse(parsed.updatedAt)) / 1000;
+          if (!Number.isFinite(age) || age < -5) continue;
+          workers.push({ role: parsed.role.replace(/^worker:/, ''), workerId: parsed.workerId, concurrency: parsed.concurrency, lastHeartbeatAgoSeconds: Math.max(0, Math.round(age)), alive: age < 45 });
+        } catch { /* Ignore corrupt heartbeat records, never abort the dependency report. */ }
+      }
+    } while (cursor !== '0' && scans < 100 && workers.length < 5000);
     return { workers: workers.sort((a, b) => a.role.localeCompare(b.role)) };
   }
 
   async readiness() {
-    const [db, redis, storage, ai, vp] = await Promise.all([
+    const [db, redis, storage, ai, vp, workers] = await Promise.all([
       this.databaseHealth(),
       this.redisHealth(),
-      this.storageHealth(),
+      boundedProbe(() => this.storageHealth(), env.HEALTHCHECK_TIMEOUT_MS).catch(() => ({ component: 'storage', status: 'down' as const, message: 'Storage probe timed out', details: {} })),
       this.aiEngineHealth(),
       this.videoProcessorHealth(),
+      boundedProbe(() => this.workers(), env.HEALTHCHECK_TIMEOUT_MS).catch(() => ({ workers: [] })),
     ]);
     const integration = this.integrationHealth();
-    const workers = await this.workers();
-    const blocking = [db, redis, storage].filter((c) => c.status === 'down');
+    const blocking = [db, redis, storage].filter((c) => c.status !== 'healthy');
+    const activeRoles = new Set(workers.workers.filter((worker) => worker.alive).map((worker) => worker.role));
+    const processingWorkersReady = ['ai', 'render', 'recovery'].every((role) => activeRoles.has(role));
+    const publishingWorkersReady = ['publish', 'scheduler', 'recovery'].every((role) => activeRoles.has(role));
     const processingBlockers = [ai, vp].filter((c) => c.status !== 'healthy');
     return {
       ready: blocking.length === 0,
-      processingReady: blocking.length === 0 && processingBlockers.length === 0 && integration.find((c) => c.component === 'gemini')?.status === 'healthy',
+      processingReady: blocking.length === 0 && processingBlockers.length === 0 && processingWorkersReady && integration.find((c) => c.component === 'gemini')?.status === 'healthy',
+      publishingReady: blocking.length === 0 && publishingWorkersReady && integration.some((c) => ['youtube', 'instagram'].includes(c.component) && c.status === 'healthy'),
       components: { db, redis, storage, ai, vp, integration },
       workers: workers.workers,
     };

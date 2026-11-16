@@ -11,6 +11,7 @@ export class ApiError extends Error {
 }
 
 let csrfToken: string | null = null;
+let csrfRequest: Promise<string> | null = null;
 
 /**
  * A deployed dashboard can fail in ways a local one cannot: the API origin in the build-time
@@ -26,18 +27,27 @@ export function isBackendUnreachable(error: unknown): boolean {
   return error instanceof ApiError && error.code === 'BACKEND_UNREACHABLE';
 }
 
-async function ensureCsrf(): Promise<string> {
-  if (csrfToken) return csrfToken;
+async function fetchAnonymousCsrf(): Promise<string> {
   let response: Response;
   try {
     response = await fetch('/api/auth/csrf', { credentials: 'include' });
   } catch (cause) {
     throw unreachable((cause as Error)?.message ?? 'The network request failed.');
   }
-  if (!response.ok) throw new ApiError('Unable to obtain a CSRF token', response.status, 'CSRF_FAILED');
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+    throw new ApiError(payload?.error?.message ?? 'Unable to obtain a CSRF token', response.status, payload?.error?.code ?? 'CSRF_FAILED');
+  }
   const body = (await response.json()) as { csrfToken: string };
-  csrfToken = body.csrfToken;
-  return csrfToken;
+  if (typeof body.csrfToken !== 'string' || !body.csrfToken) throw new ApiError('Invalid CSRF response from API', 502, 'CSRF_FAILED');
+  return body.csrfToken;
+}
+
+async function ensureCsrf(): Promise<string> {
+  if (csrfToken) return csrfToken;
+  // One anonymous cookie/token pair for concurrent first mutations, not a race of GETs.
+  if (!csrfRequest) csrfRequest = fetchAnonymousCsrf().then((token) => { csrfToken ??= token; return csrfToken; }).finally(() => { csrfRequest = null; });
+  return csrfRequest;
 }
 
 export function setCsrfToken(token: string | null): void {
@@ -62,12 +72,6 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   } catch (cause) {
     if ((cause as Error)?.name === 'AbortError') throw cause;
     throw unreachable((cause as Error)?.message ?? 'The network request failed.');
-  }
-
-  // A proxy that cannot reach its upstream answers with its own HTML error page. `!response.ok`
-  // plus a non-JSON body is that case, and it is not a validation error from the API.
-  if ([502, 503, 504].includes(response.status)) {
-    throw unreachable(`The API responded through a proxy with HTTP ${response.status}. Check that the API origin is running and publicly reachable.`, response.status);
   }
 
   const text = await response.text();

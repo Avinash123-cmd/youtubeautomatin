@@ -6,7 +6,7 @@ import {
   completeUploadSchema,
   importUrlSchema,
   initiateUploadSchema,
-  paginationSchema,
+  sourceListQuerySchema,
 } from '@clipforge/validation';
 import { CurrentContext } from '../common/decorators/auth.decorators';
 import type { RequestContext } from '../common/guards/session-auth.guard';
@@ -70,7 +70,7 @@ export class SourcesController {
   @Get()
   @ApiOperation({ summary: 'List source videos for the workspace' })
   async list(@Query() query: unknown, @CurrentContext() ctx: RequestContext) {
-    return this.sources.list(ctx, paginationSchema.parse(query));
+    return this.sources.list(ctx, sourceListQuerySchema.parse(query));
   }
 
   @Get(':id')

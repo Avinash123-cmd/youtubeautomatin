@@ -16,3 +16,12 @@ than writing another HTTP client.
 
 Rules: a scenario asserts with evidence (status, id, measured value) in its output line; a test that
 cannot fail is not a test.
+
+## Current explicit prerequisites
+
+Full-workflow E2E has no baked-in account credentials or machine-specific fixture path. Configure
+`CLIPFORGE_EMAIL`, `CLIPFORGE_PASSWORD` and `CLIPFORGE_TEST_VIDEO` (or pass the video path as argument).
+Use a disposable environment and a speech-bearing source for Whisper. Unit test secrets must be
+non-production; the test commands in the current readiness report provide an example. Python service
+HTTP tests require the pinned FastAPI/Pydantic dependencies and httpx; FFmpeg verdict tests additionally
+require real ffmpeg/ffprobe executables. Missing media tools are reported as skips, never render passes.

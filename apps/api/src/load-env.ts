@@ -5,7 +5,9 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const candidates = [resolve(process.cwd(), '.env'), resolve(process.cwd(), '../../.env')];
+// Both src/ (tsx) and dist/ (node) live three levels below the repository root.
+// Do not let an unrelated working directory silently select a different .env.
+const candidates = [resolve(__dirname, '../../../.env')];
 for (const candidate of candidates) {
   if (existsSync(candidate)) {
     // Node >= 20.12 provides this natively; it never overrides existing vars.

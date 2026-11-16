@@ -1,34 +1,22 @@
-# Scrape configuration for the metrics already exposed by the API (/api/system/health)
-# and the two Python services (/health). Prometheus is optional: the dashboard's
-# System administration page reads the same probes directly, so monitoring works
-# without this stack.
+# JSON readiness endpoints are HTTP-probed by blackbox-exporter, never parsed as metrics.
 global:
   scrape_interval: 30s
   evaluation_interval: 30s
-
-rule_files:
-  - alerts.yml
-
+rule_files: [alerts.yml]
 scrape_configs:
-  - job_name: clipforge-api
-    metrics_path: /api/system/health
+  - job_name: clipforge-readiness
+    metrics_path: /probe
+    params:
+      module: [http_ready]
     static_configs:
-      - targets: ['api:4000']
-
-  - job_name: clipforge-ai-engine
-    metrics_path: /health
-    static_configs:
-      - targets: ['ai-engine:8100']
-
-  - job_name: clipforge-video-processor
-    metrics_path: /health
-    static_configs:
-      - targets: ['video-processor:8200']
-
-  - job_name: postgres
-    static_configs:
-      - targets: ['postgres-exporter:9187']
-
-  - job_name: redis
-    static_configs:
-      - targets: ['redis-exporter:9121']
+      - targets:
+          - http://api:4000/api/system/health
+          - http://ai-engine:8100/health
+          - http://video-processor:8200/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

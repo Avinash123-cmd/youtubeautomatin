@@ -3,21 +3,18 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { RIGHTS_DECLARATIONS as RIGHTS } from '@/lib/source-rights';
+import { processingConfiguration } from '@/lib/processing-request';
 import { api, uploadSource } from '@/lib/api';
 import { useConfiguration, useSession } from '@/lib/hooks';
 import { Card, CardHeader, ErrorState, Field, Section } from '@/components/ui';
-
-const RIGHTS = [
-  { value: 'I_OWN_THE_CONTENT', label: 'I own this content' },
-  { value: 'I_HAVE_WRITTEN_PERMISSION', label: 'I have written permission from the rights holder' },
-  { value: 'LICENSED_FOR_REPURPOSING', label: 'I hold a licence that permits repurposing' },
-];
 
 export default function CreatePage() {
   const router = useRouter();
   const client = useQueryClient();
   const session = useSession();
   const configuration = useConfiguration();
+  const [targetDurations, setTargetDurations] = useState<Array<15 | 30>>([15, 30]);
   const [file, setFile] = useState<File | null>(null);
   const [uploadPercent, setUploadPercent] = useState(0);
   const [rights, setRights] = useState('');
@@ -32,12 +29,14 @@ export default function CreatePage() {
     mutationFn: async () => {
       if (!file) throw new Error('Select a video file first');
       if (!rights) throw new Error('A rights declaration is mandatory');
+      // Validate settings before a potentially large upload.
+      const request = { configuration: processingConfiguration(configuration.data?.values ?? {}, targetDurations) };
       const source = await uploadSource(file, {
         rightsStatement: `${rights}${rightsNote ? ` — ${rightsNote}` : ''}`,
         youTubeReferenceUrl: youtubeReference || undefined,
         onProgress: (progress) => setUploadPercent(progress.percent),
       });
-      return api<{ id: string }>('/api/jobs', { method: 'POST', body: { sourceId: source.id } });
+      return api<{ id: string }>('/api/jobs', { method: 'POST', body: { ...request, sourceVideoId: source.id } });
     },
     onSuccess: (job) => {
       void client.invalidateQueries({ queryKey: ['jobs'] });
@@ -53,6 +52,7 @@ export default function CreatePage() {
   const importFromUrl = useMutation({
     mutationFn: async () => {
       if (!rights) throw new Error('A rights declaration is mandatory');
+      const request = { configuration: processingConfiguration(configuration.data?.values ?? {}, targetDurations) };
       const source = await api<{ id: string; sourceVideoId?: string }>('/api/sources/import', {
         method: 'POST',
         body: {
@@ -61,7 +61,7 @@ export default function CreatePage() {
           youTubeReferenceUrl: youtubeReference || undefined,
         },
       });
-      return api<{ id: string }>('/api/jobs', { method: 'POST', body: { sourceId: source.sourceVideoId ?? source.id } });
+      return api<{ id: string }>('/api/jobs', { method: 'POST', body: { ...request, sourceVideoId: source.sourceVideoId ?? source.id } });
     },
     onSuccess: (job) => router.push(`/jobs/${job.id}`),
     onError: (mutationError: Error) => setError(mutationError.message),
@@ -81,6 +81,8 @@ export default function CreatePage() {
       ) : null}
 
       {error ? <ErrorState message={error} /> : null}
+
+      {configuration.error ? <ErrorState message={configuration.error.message} onRetry={() => void configuration.refetch()} /> : null}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
@@ -107,7 +109,7 @@ export default function CreatePage() {
             <button
               type="button"
               className="btn-primary w-full"
-              disabled={!file || !rights || missing.length > 0 || createFromFile.isPending}
+              disabled={configuration.isLoading || configuration.isError || !targetDurations.length || !file || !rights || missing.length > 0 || createFromFile.isPending}
               onClick={() => {
                 setError(null);
                 createFromFile.mutate();
@@ -127,7 +129,7 @@ export default function CreatePage() {
             <button
               type="button"
               className="btn-secondary w-full"
-              disabled={!sourceUrl || !rights || missing.length > 0 || importFromUrl.isPending}
+              disabled={configuration.isLoading || configuration.isError || !targetDurations.length || !sourceUrl || !rights || missing.length > 0 || importFromUrl.isPending}
               onClick={() => {
                 setError(null);
                 importFromUrl.mutate();
@@ -143,6 +145,11 @@ export default function CreatePage() {
       <Card>
         <CardHeader title="Rights and processing settings" description="A rights declaration is mandatory for every source, and settings are read from your saved configuration — never silently defaulted." />
         <div className="space-y-4 px-5 py-5">
+          <fieldset className="space-y-2">
+            <legend className="label">Clip lengths</legend>
+            <div className="flex flex-wrap gap-4">{([15, 30] as const).map((duration) => <label key={duration} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={targetDurations.includes(duration)} onChange={(event) => setTargetDurations((current) => event.target.checked ? [...current, duration].sort() : current.filter((value) => value !== duration))} />{duration} seconds</label>)}</div>
+            <p className="hint">Generate clips for review. Nothing is automatically published from this screen.</p>
+          </fieldset>
           <Field label="Rights declaration" required>
             <select className="input" value={rights} onChange={(event) => setRights(event.target.value)}>
               <option value="">Select a declaration…</option>

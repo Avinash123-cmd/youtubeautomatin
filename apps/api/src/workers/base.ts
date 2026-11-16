@@ -75,6 +75,7 @@ export function createWorker(
   handler: (job: Job, runtime: WorkerRuntime) => Promise<void>,
   concurrency: number,
 ): Worker {
+  const connection = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
   const worker = new Worker(
     queue,
     async (job) => {
@@ -90,7 +91,7 @@ export function createWorker(
       }
     },
     {
-      connection: new Redis(env.REDIS_URL, { maxRetriesPerRequest: null }),
+      connection,
       concurrency,
       prefix: env.REDIS_PREFIX,
       lockDuration: 300_000,
@@ -99,6 +100,7 @@ export function createWorker(
     } satisfies WorkerOptions,
   );
 
+  worker.on('closed', () => connection.disconnect());
   worker.on('failed', (job, error) => {
     runtime.logger.error(`bullmq failed event ${queue}#${job?.id}: ${error.message}`);
   });
@@ -108,10 +110,19 @@ export function createWorker(
 
 /** Shared graceful-shutdown wiring for every worker entrypoint. */
 export function wireShutdown(runtime: WorkerRuntime, workers: Worker[]): void {
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const deadline = setTimeout(() => {
+      runtime.logger.error('Graceful shutdown deadline exceeded; unfinished leases will be recovered');
+      process.exit(1);
+    }, env.WORKER_SHUTDOWN_GRACE_MS);
+    deadline.unref();
     runtime.logger.info(`${signal} received — draining`);
     await Promise.all(workers.map((worker) => worker.close().catch(() => undefined)));
     await runtime.stop();
+    clearTimeout(deadline);
     process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));

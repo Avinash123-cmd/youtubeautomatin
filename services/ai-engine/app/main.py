@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
+import shutil
 import threading
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
 
 from .config import ConfigurationError, Settings, load_settings
 from .gemini import GeminiError, SchemaValidationError
@@ -51,7 +54,7 @@ def settings() -> Settings:
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     cfg = settings()
-    if not x_api_key or x_api_key != cfg.api_key:
+    if not x_api_key or not secrets.compare_digest(x_api_key.encode('utf-8'), cfg.api_key.encode('utf-8')):
         raise HTTPException(status_code=401, detail={"code": "UNAUTHENTICATED", "message": "Invalid service API key"})
 
 
@@ -59,41 +62,46 @@ class TranscribeRequest(BaseModel):
     audio_path: str | None = None
     video_path: str | None = None
     language: str | None = None
-    job_id: str = Field(default="adhoc")
+    job_id: str = Field(default="adhoc", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 class AnalyzeRequest(BaseModel):
-    job_id: str
+    job_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     video_path: str
     text_model: str | None = None
     vision_model: str | None = None
     target_durations: list[int] = Field(default_factory=lambda: [15, 30])
-    max_candidates: int = 12
-    max_clips: int = 6
-    min_quality_score: int = 70
-    duplicate_threshold: float = 0.35
+    max_candidates: int = Field(default=12, ge=1, le=100)
+    max_clips: int = Field(default=6, ge=1, le=50)
+    min_quality_score: int = Field(default=70, ge=0, le=100)
+    duplicate_threshold: float = Field(default=0.35, ge=0, le=1)
     language: str | None = None
     enable_vision: bool = True
     # Optional reuse of a transcript already produced by the TRANSCRIBING stage.
     transcript: dict | None = None
 
 
+@app.get("/live")
+def live() -> dict:
+    return {"status": "ok", "service": "clipforge-ai-engine"}
+
+
 @app.get("/health")
-def health() -> dict[str, Any]:
+def health():
     try:
         cfg = settings()
-    except HTTPException as exc:
-        return {"status": "unconfigured", "detail": exc.detail}
-    return {
-        "status": "ok",
-        "provider": cfg.provider,
-        "geminiConfigured": cfg.gemini_configured,
-        "whisperModel": cfg.whisper_model,
-        "testMode": cfg.test_mode,
-        "ffmpeg": cfg.ffmpeg_path,
-        "ffprobe": cfg.ffprobe_path,
-        "visionFramesBudget": cfg.max_vision_frames,
-    }
+    except HTTPException:
+        return JSONResponse(status_code=503, content={"status": "unconfigured"})
+    tools_available = bool(shutil.which(cfg.ffmpeg_path) and shutil.which(cfg.ffprobe_path))
+    configured = cfg.provider == "fixture" and cfg.test_mode or cfg.gemini_configured
+    status = "down" if not tools_available else "ok" if configured else "unconfigured"
+    # Configuration/binary availability is not proof a remote provider or an uncached model works.
+    from .transcribe import _model_cache
+    return JSONResponse(status_code=200 if status == "ok" else 503, content={
+        "status": status, "provider": cfg.provider, "geminiConfigured": cfg.gemini_configured,
+        "whisperModel": cfg.whisper_model, "modelLoaded": bool(_model_cache),
+        "testMode": cfg.test_mode, "mediaToolsAvailable": tools_available,
+    })
 
 
 class CaptionClip(BaseModel):

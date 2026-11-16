@@ -45,6 +45,9 @@ export class AuthService {
     const slug = slugify(input.workspaceName);
 
     const { user, workspace } = await prisma.$transaction(async (tx) => {
+      // Serialize concurrent first-admin requests, including those for different emails.
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(684725109)`;
+      if (await tx.user.count() > 0) throw new ConflictException({ code: 'CONFLICT', message: 'Bootstrap already completed — a user account exists' });
       const createdUser = await tx.user.create({
         data: { email: input.email, passwordHash, displayName: input.displayName, role: 'OWNER', emailVerified: true },
       });
@@ -161,6 +164,8 @@ export class AuthService {
   async loginWithFirebase(idToken: string, request: Request) {
     const identity = await this.firebase.verifyIdToken(idToken);
     const user = await this.resolveFirebaseUser(identity);
+    const stepUp = await this.security.beginStepUp(user, request, 'FIREBASE');
+    if (stepUp) return stepUp;
     await prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date(), failedLoginAttempts: 0, lockedUntil: null },
@@ -180,6 +185,8 @@ export class AuthService {
   /** A signed Telegram OIDC subject maps only by its immutable provider ID, never by username/name. */
   async loginWithTelegram(identity: TelegramOidcIdentity, request: Request) {
     const user = await this.resolveTelegramUser(identity);
+    const stepUp = await this.security.beginStepUp(user, request, 'TELEGRAM');
+    if (stepUp) return stepUp;
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date(), failedLoginAttempts: 0, lockedUntil: null } });
     const session = await this.issueSession(user.id, request);
     await this.security.recordLogin(user.id, 'SUCCESS', 'TELEGRAM', request);

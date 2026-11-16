@@ -1,0 +1,1084 @@
+// ===========================================================================
+// ClipForge AI — PostgreSQL schema (Prisma)
+// Tenant model: Workspace is the tenant boundary. Every business row carries
+// workspaceId and every query is scoped by it in the repository layer.
+// ===========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------- enums --------------------------------------
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum Platform {
+  YOUTUBE
+  INSTAGRAM
+  TELEGRAM
+}
+
+enum ConnectedAccountStatus {
+  PENDING
+  CONNECTED
+  EXPIRED
+  REVOKED
+  ERROR
+}
+
+enum TokenHealth {
+  UNKNOWN
+  VALID
+  EXPIRING_SOON
+  EXPIRED
+  INVALID
+}
+
+enum SourceKind {
+  UPLOAD
+  DIRECT_URL
+  STORAGE_PROVIDER
+}
+
+enum SourceStatus {
+  INITIATED
+  UPLOADED
+  VALIDATED
+  REJECTED
+  ARCHIVED
+}
+
+enum MediaAssetKind {
+  SOURCE_VIDEO
+  EXTRACTED_AUDIO
+  FRAME
+  RENDERED_CLIP
+  THUMBNAIL
+  SUBTITLE
+  OTHER
+}
+
+enum JobStatus {
+  CREATED
+  UPLOADING
+  QUEUED
+  PROBING
+  TRANSCRIBING
+  AI_ANALYSIS
+  CLIP_SELECTION
+  RENDERING
+  VALIDATION
+  ASSET_STORAGE
+  PUBLISHING_QUEUED
+  PUBLISHING
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+  CANCELLED
+  NEEDS_CONFIGURATION
+  RETRYING
+}
+
+enum JobStageStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+  CANCELLED
+}
+
+enum CandidateStatus {
+  PROPOSED
+  ACCEPTED
+  REJECTED
+  RENDERED
+  PUBLISHED
+}
+
+enum ClipStatus {
+  PLANNED
+  RENDERING
+  RENDER_FAILED
+  READY
+  PUBLISHING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  PUBLISH_FAILED
+}
+
+enum PublishingStatus {
+  PENDING
+  ELIGIBILITY_CHECK
+  QUEUED
+  UPLOADING
+  AWAITING_PLATFORM
+  PUBLISHED
+  FAILED
+  SKIPPED
+  CANCELLED
+}
+
+enum PublishingOperation {
+  SINGLE_VIDEO_UPLOAD
+  REEL_PUBLISH
+  CONTAINER_STATUS_CHECK
+  NONE
+}
+
+enum AuditAction {
+  AUTH_LOGIN
+  AUTH_LOGOUT
+  AUTH_BOOTSTRAP
+  USER_CREATED
+  ACCOUNT_CONNECTED
+  ACCOUNT_DISCONNECTED
+  ACCOUNT_TOKEN_REFRESHED
+  SOURCE_UPLOADED
+  JOB_CREATED
+  JOB_CANCELLED
+  JOB_RETRIED
+  JOB_STAGE_CHANGED
+  CLIP_RENDERED
+  CLIP_METADATA_EDITED
+  PUBLISHING_ENABLED
+  PUBLISHING_DISABLED
+  PUBLISH_ATTEMPTED
+  PUBLISH_SUCCEEDED
+  PUBLISH_FAILED
+  CONFIG_CHANGED
+  RIGHTS_DECLARED
+  BRAND_PROFILE_CREATED
+  BRAND_ASSET_UPLOADED
+  NOTIFICATION_SETTINGS_CHANGED
+  NOTIFICATION_SENT
+  NOTIFICATION_FAILED
+  AUTH_OTP_CHALLENGE
+  AUTH_OTP_VERIFIED
+  AUTH_PASSWORD_RESET_REQUESTED
+  AUTH_PASSWORD_RESET
+  AUTH_SESSION_REVOKED
+  AUTH_TELEGRAM_LINKED
+  AUTH_TELEGRAM_DISCONNECTED
+  AUTH_RECOVERY_CODE_USED
+  AUTH_SECURITY_ALERT
+  TELEGRAM_WEBHOOK_RECEIVED
+  TELEGRAM_COMMAND_EXECUTED
+  TELEGRAM_COMMAND_REJECTED
+  AUTOMATION_PAUSED
+  AUTOMATION_RESUMED
+}
+
+enum Visibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum HealthSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// ----------------------------- identity -----------------------------------
+
+enum OtpChannel {
+  EMAIL
+  TELEGRAM
+}
+
+enum OtpPurpose {
+  LOGIN
+  PASSWORD_RESET
+  TELEGRAM_LINK
+}
+
+/// How a user proves a second factor. Default OFF so every existing account keeps working exactly
+/// as it does today; turning it on is an explicit, verified action.
+enum OtpMode {
+  OFF
+  EMAIL
+  TELEGRAM
+  DUAL
+}
+
+enum LoginOutcome {
+  SUCCESS
+  FAILED_PASSWORD
+  OTP_CHALLENGE
+  OTP_FAILED
+  BLOCKED
+}
+
+enum LoginMethod {
+  PASSWORD
+  FIREBASE
+  TELEGRAM
+  OTP
+  RECOVERY_CODE
+  BOOTSTRAP
+}
+
+model User {
+  id            String     @id @default(uuid()) @db.Uuid
+  email         String     @unique
+  // Null for accounts that only ever sign in with Google/Firebase: a password is not a
+  // requirement for identity, and storing a fake hash would be a lie in the audit trail.
+  passwordHash  String?
+  displayName   String
+  // Firebase Authentication linkage. Null for password-only accounts. Unique so a Firebase
+  // identity can never be claimed by two rows.
+  firebaseUid   String?    @unique
+  /// Stable Telegram OIDC subject. Kept separate from the bot connection so a user can disconnect
+  /// notifications without losing Telegram sign-in. Both identifiers are checked across accounts.
+  telegramLoginId String?   @unique
+  /// Telegram identity verified by the bot's private-chat deep-link handshake.
+  telegramUserId String?    @unique
+  telegramUsername String?
+  avatarUrl     String?
+  role          UserRole   @default(OWNER)
+  status        UserStatus @default(ACTIVE)
+  emailVerified Boolean    @default(false)
+  lastLoginAt   DateTime?
+  failedLoginAttempts Int  @default(0)
+  lockedUntil   DateTime?
+  // Second-factor policy. OFF by default so accounts created before this feature keep behaving
+  // exactly as they did; EMAIL/TELEGRAM/DUAL require a code before a session is issued.
+  otpMode       OtpMode    @default(OFF)
+  // Telegram chat that receives codes and notifications for this user. Numeric (Bot API chat ids
+  // are numbers, groups are negative). Null until the user links one; only the masked form is ever
+  // returned to the browser.
+  telegramChatId   String?
+  telegramLinkedAt DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  deletedAt     DateTime?
+
+  memberships WorkspaceMember[]
+  sessions    Session[]
+  otpChallenges OtpChallenge[]
+  loginEvents   LoginEvent[]
+  recoveryCodes RecoveryCode[]
+  auditLogs   AuditLog[]
+  telegramConnectionTokens TelegramConnectionToken[]
+
+  @@index([status])
+}
+
+/// Short-lived OIDC state and PKCE verifier. Only state is exposed to the browser; the verifier is
+/// encrypted at rest, and verifier/nonce records expire quickly.
+model TelegramOidcTransaction {
+  id           String   @id @default(uuid()) @db.Uuid
+  stateHash    String   @unique
+  nonce        String
+  codeVerifier Json
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// A single-use Telegram bot deep-link token. The plaintext only goes to the logged-in browser and
+/// then Telegram; PostgreSQL stores only its SHA-256 hash.
+model TelegramConnectionToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  tokenHash  String   @unique
+  userId     String   @db.Uuid
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([expiresAt])
+}
+
+model Workspace {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String   @unique
+  timezone  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  members          WorkspaceMember[]
+  brandProfiles    BrandProfile[]
+  subtitlePresets  SubtitlePreset[]
+  sources          SourceVideo[]
+  mediaAssets      MediaAsset[]
+  jobs             ProcessingJob[]
+  transcripts      Transcript[]
+  candidates       HighlightCandidate[]
+  clips            GeneratedClip[]
+  accounts         ConnectedAccount[]
+  publishingJobs   PublishingJob[]
+  publishedPosts   PublishedPost[]
+  storageObjects   StorageObject[]
+  usageRecords     UsageRecord[]
+  auditLogs        AuditLog[]
+  configurations   ApplicationConfiguration[]
+  webhookEvents    WebhookEvent[]
+  healthEvents     SystemHealthEvent[]
+  notifications    NotificationDelivery[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  userId      String   @db.Uuid
+  role        UserRole @default(MEMBER)
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Session {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  tokenHash  String   @unique          // sha256(HMAC(session_secret, raw token))
+  csrfHash   String                     // sha256 of the CSRF double-submit token
+  userAgent  String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  /// Browser/platform guess from the user agent, for the active-sessions list.
+  deviceLabel String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ------------------------- connected accounts -----------------------------
+
+model ConnectedAccount {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  workspaceId         String                 @db.Uuid
+  platform            Platform
+  externalAccountId   String                 // YouTube channel id / IG professional account id
+  displayName         String
+  username            String?
+  avatarUrl           String?
+  status              ConnectedAccountStatus @default(PENDING)
+  scopes              String[]               @default([])
+  tokenHealth         TokenHealth            @default(UNKNOWN)
+  tokenCheckedAt      DateTime?
+  lastError           String?
+  publishingEnabled   Boolean                @default(false)
+  publishingConfig    Json?                  // explicit user configuration (privacy, schedule, flags)
+  connectedAt         DateTime?
+  disconnectedAt      DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  credential      OAuthCredential?
+  publishingJobs  PublishingJob[]
+  publishedPosts  PublishedPost[]
+
+  @@unique([workspaceId, platform, externalAccountId])
+  @@index([workspaceId, platform])
+}
+
+model OAuthCredential {
+  id                String   @id @default(uuid()) @db.Uuid
+  connectedAccountId String  @unique @db.Uuid
+  // AES-256-GCM envelope: {v, iv, tag, ciphertext} — never decrypted client-side.
+  accessTokenEnc    Json
+  refreshTokenEnc   Json?
+  tokenType         String   @default("Bearer")
+  scope             String?
+  expiresAt         DateTime?
+  refreshedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+}
+
+// ------------------------------ sources -----------------------------------
+
+model SourceVideo {
+  id                String       @id @default(uuid()) @db.Uuid
+  workspaceId       String       @db.Uuid
+  createdById       String       @db.Uuid
+  kind              SourceKind
+  status            SourceStatus @default(INITIATED)
+  originalFileName  String?
+  declaredMimeType  String?
+  detectedMimeType  String?
+  sizeBytes         BigInt?
+  storageKey        String?      // object key in the configured storage driver
+  sourceUrl         String?      // direct URL import or YouTube reference URL
+  youTubeReferenceId String?
+  youTubeReferenceUrl String?
+  rightsDeclaration Json?        // {accepted, acceptedAt, acceptedByUserId, statement, version}
+  probeResult       Json?        // ffprobe output (duration, streams, codecs…)
+  durationSeconds   Float?
+  width             Int?
+  height            Int?
+  frameRate         Float?
+  validationReport  Json?
+  rejectionReason   String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  deletedAt         DateTime?
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  jobs       ProcessingJob[]
+  assets     MediaAsset[]
+  transcripts Transcript[]
+
+  @@index([workspaceId, status])
+}
+
+model MediaAsset {
+  id            String         @id @default(uuid()) @db.Uuid
+  workspaceId   String         @db.Uuid
+  sourceVideoId String?        @db.Uuid
+  kind          MediaAssetKind
+  storageKey    String
+  mimeType      String
+  sizeBytes     BigInt
+  checksumSha256 String?
+  durationSeconds Float?
+  metadata      Json?
+  createdAt     DateTime       @default(now())
+  deletedAt     DateTime?
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceVideo SourceVideo? @relation(fields: [sourceVideoId], references: [id], onDelete: SetNull)
+  clipVariants ClipVariant[]
+
+  @@index([workspaceId, kind])
+  @@index([sourceVideoId])
+}
+
+model StorageObject {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  driver      String   // "s3" | "local"
+  bucket      String?
+  key         String
+  sizeBytes   BigInt
+  contentType String?
+  checksum    String?
+  expiresAt   DateTime? // for temporary publishing assets fetched by Meta
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([driver, bucket, key])
+  @@index([workspaceId])
+}
+
+// ---------------------------- processing ----------------------------------
+
+model ProcessingJob {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @db.Uuid
+  sourceVideoId   String    @db.Uuid
+  createdById     String    @db.Uuid
+  status          JobStatus @default(CREATED)
+  stage           JobStatus @default(CREATED)
+  progressPercent Int       @default(0)
+  progressDetail  String?
+  attempt         Int       @default(0)
+  maxAttempts     Int       @default(3)
+  workerId        String?
+  leaseExpiresAt  DateTime?
+  heartbeatAt     DateTime?
+  configuration   Json      // explicit processing configuration captured at submit time
+  errorCode       String?
+  errorMessage    String?
+  errorDetails    Json?
+  resultSummary   Json?
+  estimatedCompletionAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceVideo SourceVideo    @relation(fields: [sourceVideoId], references: [id], onDelete: Restrict)
+  stages      JobStage[]
+  candidates  HighlightCandidate[]
+  clips       GeneratedClip[]
+  transcripts Transcript[]
+  usage       UsageRecord[]
+
+  @@index([workspaceId, status])
+  @@index([status, leaseExpiresAt])
+  @@index([sourceVideoId])
+}
+
+model JobStage {
+  id             String         @id @default(uuid()) @db.Uuid
+  jobId          String         @db.Uuid
+  stage          JobStatus
+  status         JobStageStatus @default(PENDING)
+  attempt        Int            @default(0)
+  progressPercent Int           @default(0)
+  input          Json?
+  output         Json?
+  errorCode      String?
+  errorMessage   String?
+  workerId       String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  durationMs     Int?
+  createdAt      DateTime       @default(now())
+
+  job ProcessingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, stage])
+  @@index([jobId, createdAt])
+}
+
+model Transcript {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @db.Uuid
+  sourceVideoId String   @db.Uuid
+  jobId         String?  @db.Uuid
+  language      String
+  languageProbability Float
+  provider      String   // "faster-whisper" etc.
+  model         String
+  wordTimestamps Boolean @default(true)
+  durationSeconds Float?
+  fullText      String
+  storageKey    String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceVideo SourceVideo        @relation(fields: [sourceVideoId], references: [id], onDelete: Cascade)
+  job         ProcessingJob?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  segments    TranscriptSegment[]
+
+  @@index([workspaceId, sourceVideoId])
+}
+
+model TranscriptSegment {
+  id           String   @id @default(uuid()) @db.Uuid
+  transcriptId String   @db.Uuid
+  sequence     Int
+  startSeconds Float
+  endSeconds   Float
+  text         String
+  speakerLabel String?
+  avgLogprob   Float?
+  noSpeechProb Float?
+  words        Json     // [{word,start,end,probability}]
+  createdAt    DateTime @default(now())
+
+  transcript Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+
+  @@unique([transcriptId, sequence])
+  @@index([transcriptId, startSeconds])
+}
+
+model HighlightCandidate {
+  id              String          @id @default(uuid()) @db.Uuid
+  workspaceId     String          @db.Uuid
+  jobId           String          @db.Uuid
+  transcriptId    String?         @db.Uuid
+  startSeconds    Float
+  endSeconds      Float
+  targetDuration  Int             // 15 or 30 — the duration the model proposed
+  hook            String
+  reason          String
+  transcriptText  String
+  contentCategory String
+  qualityScore    Int
+  confidence      Float
+  visualContext   String?
+  scores          Json            // rubric breakdown
+  status          CandidateStatus @default(PROPOSED)
+  rejectionReason String?
+  modelMetadata   Json?
+  createdAt       DateTime        @default(now())
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  job       ProcessingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  clips GeneratedClip[]
+
+  @@index([workspaceId, jobId])
+  @@index([jobId, status])
+}
+
+model GeneratedClip {
+  id              String     @id @default(uuid()) @db.Uuid
+  workspaceId     String     @db.Uuid
+  jobId           String     @db.Uuid
+  candidateId     String?    @db.Uuid
+  title           String
+  contentCategory String
+  qualityScore    Int
+  status          ClipStatus @default(PLANNED)
+  startSeconds    Float
+  endSeconds      Float
+  durationKind    Int        // 15 | 30
+  duplicateOfClipId String?  @db.Uuid
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  job       ProcessingJob      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidate HighlightCandidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  variants  ClipVariant[]
+  metadata  ClipMetadata[]
+  publishingJobs PublishingJob[]
+
+  @@index([workspaceId, status])
+  @@index([jobId, durationKind])
+}
+
+model ClipVariant {
+  id             String   @id @default(uuid()) @db.Uuid
+  clipId         String   @db.Uuid
+  mediaAssetId   String?  @db.Uuid
+  subtitleAssetId String? @db.Uuid
+  width          Int
+  height         Int
+  fps            Int
+  videoCodec     String
+  audioCodec     String
+  bitrateKbps    Int?
+  container      String   @default("mp4")
+  sizeBytes      BigInt?
+  durationSeconds Float?
+  renderProfile  Json     // framing mode, subtitle style, loudness target…
+  renderReport   Json?
+  checksumSha256 String?
+  createdAt      DateTime @default(now())
+
+  clip      GeneratedClip @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  mediaAsset MediaAsset?  @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  publishingJobs PublishingJob[]
+
+  @@index([clipId])
+}
+
+model ClipMetadata {
+  id         String   @id @default(uuid()) @db.Uuid
+  clipId     String   @db.Uuid
+  platform   Platform
+  title      String?
+  description String?
+  hashtags   String[] @default([])
+  tags       String[] @default([])
+  language   String
+  brandVoice String?
+  model      String
+  reviewStatus String @default("DRAFT") // DRAFT | APPROVED
+  generatedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  clip GeneratedClip @relation(fields: [clipId], references: [id], onDelete: Cascade)
+
+  @@unique([clipId, platform])
+}
+
+// ---------------------------- publishing ----------------------------------
+
+model PublishingJob {
+  id                 String            @id @default(uuid()) @db.Uuid
+  workspaceId        String            @db.Uuid
+  clipId             String            @db.Uuid
+  clipVariantId      String?           @db.Uuid
+  connectedAccountId String            @db.Uuid
+  platform           Platform
+  operation          PublishingOperation @default(NONE)
+  status             PublishingStatus  @default(PENDING)
+  idempotencyKey     String            @unique   // clipId:platform:accountId:operation
+  scheduledFor       DateTime?
+  attempt            Int               @default(0)
+  maxAttempts        Int               @default(5)
+  nextAttemptAt      DateTime?
+  priority           Int               @default(0)
+  visibility         Visibility?
+  platformMetadata   Json?
+  externalId         String?           // YouTube video id / IG media id once known
+  externalUrl        String?
+  errorCode          String?
+  errorMessage       String?
+  retryable          Boolean?
+  workerId           String?
+  leaseExpiresAt     DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  completedAt        DateTime?
+
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clip             GeneratedClip    @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  clipVariant      ClipVariant?     @relation(fields: [clipVariantId], references: [id], onDelete: SetNull)
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  attempts         PublishingAttempt[]
+
+  @@index([workspaceId, status])
+  @@index([status, nextAttemptAt])
+  @@index([clipId, platform])
+}
+
+model PublishingAttempt {
+  id              String   @id @default(uuid()) @db.Uuid
+  publishingJobId String   @db.Uuid
+  attemptNumber   Int
+  operation       PublishingOperation
+  requestSummary  Json
+  httpStatus      Int?
+  responseSummary Json?
+  errorCode       String?
+  errorMessage    String?
+  retryable       Boolean?
+  startedAt       DateTime @default(now())
+  finishedAt      DateTime?
+  durationMs      Int?
+  workerId        String?
+
+  publishingJob PublishingJob @relation(fields: [publishingJobId], references: [id], onDelete: Cascade)
+
+  @@unique([publishingJobId, attemptNumber, operation])
+  @@index([publishingJobId])
+}
+
+model PublishedPost {
+  id                 String   @id @default(uuid()) @db.Uuid
+  workspaceId        String   @db.Uuid
+  publishingJobId    String?  @db.Uuid
+  connectedAccountId String   @db.Uuid
+  platform           Platform
+  externalId         String
+  externalUrl        String?
+  publishedAt        DateTime
+  visibility         Visibility?
+  platformResponse   Json?
+  createdAt          DateTime @default(now())
+
+  workspace        Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connectedAccount ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, connectedAccountId, externalId])
+  @@index([workspaceId, platform])
+}
+
+// ---------------------------- configuration -------------------------------
+
+model BrandProfile {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  isDefault   Boolean  @default(false)
+  primaryColor String?
+  secondaryColor String?
+  textColor   String?
+  logoStorageKey String?
+  fontFamily  String?
+  brandVoice  String?  // professional | educational | motivational | conversational | entertaining | custom
+  customVoiceInstructions String?
+  audienceDescription String?
+  introEnabled Boolean @default(false)
+  outroEnabled Boolean @default(false)
+  introAssetKey String?
+  outroAssetKey String?
+  watermarkPosition String? // top-left | top-right | bottom-left | bottom-right
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clips     GeneratedClipMetadataLink[]
+
+  @@index([workspaceId])
+}
+
+// Explicit join so clip metadata can record which brand profile produced it.
+model GeneratedClipMetadataLink {
+  id        String @id @default(uuid()) @db.Uuid
+  clipId    String @db.Uuid
+  brandProfileId String @db.Uuid
+  createdAt DateTime @default(now())
+
+  brandProfile BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([clipId, brandProfileId])
+}
+
+model SubtitlePreset {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String?  @db.Uuid
+  name        String
+  isSystem    Boolean  @default(false)
+  style       Json     // fontFamily, fontSizePx, weight, colors, outline, shadow, position, safeMargins, highlightStyle
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+}
+
+model ApplicationConfiguration {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String?  @db.Uuid
+  key         String
+  value       Json
+  updatedById String?  @db.Uuid
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, key])
+  @@index([key])
+}
+
+model UsageRecord {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @db.Uuid
+  jobId           String?  @db.Uuid
+  kind            String   // transcription_seconds | gemini_tokens | render_seconds | storage_bytes | publish_calls
+  quantity        Float
+  unit            String
+  costUsd         Float?
+  metadata        Json?
+  recordedAt      DateTime @default(now())
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  job       ProcessingJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, kind, recordedAt])
+}
+
+model AuditLog {
+  id          String      @id @default(uuid()) @db.Uuid
+  workspaceId String?     @db.Uuid
+  userId      String?     @db.Uuid
+  action      AuditAction
+  targetType  String?
+  targetId    String?
+  summary     String
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime    @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([action, createdAt])
+}
+
+model WebhookEvent {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String?       @db.Uuid
+  platform    Platform?
+  eventType   String
+  externalId  String?
+  payload     Json
+  signature   String?
+  status      WebhookStatus @default(RECEIVED)
+  error       String?
+  receivedAt  DateTime      @default(now())
+  processedAt DateTime?
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, externalId, eventType])
+  @@index([status, receivedAt])
+}
+
+model SystemHealthEvent {
+  id          String         @id @default(uuid()) @db.Uuid
+  workspaceId String?        @db.Uuid
+  component   String         // api | worker:ai | worker:render | postgres | redis | storage | gemini | youtube | instagram
+  severity    HealthSeverity
+  status      String         // healthy | degraded | down
+  message     String
+  details     Json?
+  observedAt  DateTime       @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([component, observedAt])
+}
+
+// ------------------------- transactional outbox ---------------------------
+// Written in the same transaction as the business state change, drained by a
+// relay into BullMQ. Guarantees a committed job cannot vanish between DB & queue.
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  queue         String
+  payload       Json
+  availableAt   DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+
+  @@index([publishedAt, availableAt])
+}
+
+/// Notification categories are a closed set: the dashboard renders exactly these, and the API
+/// rejects anything else. Adding a category is a migration, on purpose — an open-ended string
+/// column would let a typo silently create a channel nobody ever reads.
+enum NotificationCategory {
+  WORKFLOW_STARTED
+  SOURCE_DETECTED
+  SOURCE_DOWNLOADED
+  AI_STARTED
+  AI_COMPLETED
+  METADATA_COMPLETED
+  UPLOAD_STARTED
+  PUBLISH_COMPLETED
+  WORKFLOW_FAILED
+  AUTH_EXPIRED
+  QUOTA_ERROR
+  SCHEDULED_STARTED
+  SCHEDULE_MISSED
+  WORKFLOW_STOPPED
+  DAILY_SUMMARY
+  CONNECTION_TEST
+  SECURITY_ALERT
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/// One row per notification the backend decided to send.
+///
+/// The unique (workspaceId, dedupeKey) pair is what makes delivery at-most-once: the row is
+/// inserted *before* Telegram is called, so a worker retry, a redelivered queue message or a
+/// process restart finds the key taken and does not send again. The row is also the delivery log
+/// the admin dashboard reads, so nothing has to be reconstructed from stdout.
+model NotificationDelivery {
+  id          String               @id @default(uuid()) @db.Uuid
+  workspaceId String               @db.Uuid
+  category    NotificationCategory
+  status      NotificationStatus   @default(PENDING)
+  /// Stable identity of the *event*, e.g. "job:<uuid>:started". Unique per workspace.
+  dedupeKey   String
+  message     String
+  jobId       String?              @db.Uuid
+  clipId      String?              @db.Uuid
+  /// How many HTTP attempts have been made. Persisted so a restart does not reset the budget.
+  attempts    Int                  @default(0)
+  lastError   String?
+  /// Telegram's message id, when the send succeeded.
+  telegramMessageId Int?
+  /// Last four characters of the chat id — enough to tell two chats apart, useless as a credential.
+  chatIdSuffix String?
+  nextAttemptAt DateTime?
+  createdAt   DateTime             @default(now())
+  sentAt      DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, dedupeKey])
+  @@index([workspaceId, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+/// A one-time code for a single (purpose, channel) pair.
+///
+/// Only a hash is stored. The plaintext exists in exactly two places: the response of the call that
+/// created it (never for LOGIN — it goes to the delivery channel only) and the delivery message.
+/// `consumedAt` plus the unique-ish query in the service is what makes a code single-use.
+model OtpChallenge {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String     @db.Uuid
+  purpose     OtpPurpose
+  channel     OtpChannel
+  codeHash    String
+  expiresAt   DateTime
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  sentAt      DateTime   @default(now())
+  consumedAt  DateTime?
+  /// Set when delivery failed, so the operator sees "code created but not delivered" rather than a
+  /// silent no-op. Never contains a credential.
+  deliveryError String?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, channel])
+  @@index([expiresAt])
+}
+
+/// One row per authentication attempt, successful or not. This is the login-history surface and the
+/// input to suspicious-login detection.
+model LoginEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  userId      String       @db.Uuid
+  outcome     LoginOutcome
+  method      LoginMethod
+  ipAddress   String?
+  userAgent   String?
+  /// Human-readable device guess derived from the user agent (browser + platform).
+  deviceLabel String?
+  suspicious  Boolean      @default(false)
+  detail      String?
+  createdAt   DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+/// Single-use account-recovery codes. Ten are generated at a time, shown once, stored hashed.
+model RecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+}

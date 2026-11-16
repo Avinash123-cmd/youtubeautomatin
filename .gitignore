@@ -1,0 +1,27 @@
+node_modules/
+dist/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+local-storage/
+*.mp4
+*.wav
+*.log
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+# Local-only secrets and generated artifacts
+*.local
+.bootstrap-token.local
+
+# Regenerable evidence: python3 tests/e2e/ui_responsive.py --screens
+artifacts/ui/

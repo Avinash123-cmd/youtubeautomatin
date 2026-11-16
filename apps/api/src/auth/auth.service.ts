@@ -1,0 +1,455 @@
+import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import * as argon2 from 'argon2';
+import type { Request } from 'express';
+import { appendAuditLog, prisma, timingSafeEqual } from '@clipforge/database';
+import { ConfigurationService } from '@clipforge/database';
+import type { BootstrapInput, LoginInput, RegisterInput } from '@clipforge/validation';
+import { env } from '../common/env';
+import { FirebaseService, type FirebaseIdentity } from './firebase.service';
+import { SessionService } from './session.service';
+import { PASSWORD_HASH_OPTIONS as HASH_OPTIONS } from './password-hash';
+import { SecurityService } from './security.service';
+import type { TelegramOidcIdentity } from './telegram-oidc.service';
+import { randomBytes } from 'node:crypto';
+
+const MAX_FAILED_ATTEMPTS = 10;
+const LOCK_MINUTES = 15;
+
+// Defined in password-hash.ts (imported by the security service too) and re-exported here so
+// existing imports keep working.
+export { PASSWORD_HASH_OPTIONS } from './password-hash';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private readonly sessions: SessionService,
+    private readonly firebase: FirebaseService,
+    private readonly security: SecurityService,
+  ) {}
+
+  /**
+   * One-time administrator bootstrap. Refuses once any user exists, so there is
+   * no permanently privileged public account and no default credentials.
+   */
+  async bootstrap(input: BootstrapInput, request: Request) {
+    const expected = env.ADMIN_BOOTSTRAP_TOKEN;
+    if (!expected || !timingSafeEqual(expected, input.bootstrapToken)) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Invalid bootstrap token' });
+    }
+    const existing = await prisma.user.count();
+    if (existing > 0) {
+      throw new ConflictException({ code: 'CONFLICT', message: 'Bootstrap already completed — a user account exists' });
+    }
+
+    const passwordHash = await argon2.hash(input.password, HASH_OPTIONS);
+    const slug = slugify(input.workspaceName);
+
+    const { user, workspace } = await prisma.$transaction(async (tx) => {
+      const createdUser = await tx.user.create({
+        data: { email: input.email, passwordHash, displayName: input.displayName, role: 'OWNER', emailVerified: true },
+      });
+      const createdWorkspace = await tx.workspace.create({
+        data: { name: input.workspaceName, slug, timezone: env.TIMEZONE },
+      });
+      await tx.workspaceMember.create({
+        data: { workspaceId: createdWorkspace.id, userId: createdUser.id, role: 'OWNER' },
+      });
+      return { user: createdUser, workspace: createdWorkspace };
+    });
+
+    await appendAuditLog({
+      workspaceId: workspace.id,
+      userId: user.id,
+      action: 'AUTH_BOOTSTRAP',
+      summary: `Administrator account bootstrapped for ${user.email}`,
+      ipAddress: request.ip,
+      userAgent: request.get('user-agent') ?? null,
+    });
+
+    return this.issueSession(user.id, request);
+  }
+
+  async register(input: RegisterInput, request: Request) {
+    const email = input.email;
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) throw new ConflictException({ code: 'CONFLICT', message: 'An account with this email already exists' });
+
+    const passwordHash = await argon2.hash(input.password, HASH_OPTIONS);
+    const workspaceName = input.workspaceName ?? `${input.displayName}'s workspace`;
+    let slug = slugify(workspaceName);
+    if (await prisma.workspace.findUnique({ where: { slug } })) slug = `${slug}-${Math.random().toString(36).slice(2, 7)}`;
+
+    const { user, workspace } = await prisma.$transaction(async (tx) => {
+      const createdUser = await tx.user.create({
+        data: { email, passwordHash, displayName: input.displayName, role: 'OWNER' },
+      });
+      const createdWorkspace = await tx.workspace.create({ data: { name: workspaceName, slug, timezone: null } });
+      await tx.workspaceMember.create({ data: { workspaceId: createdWorkspace.id, userId: createdUser.id, role: 'OWNER' } });
+      return { user: createdUser, workspace: createdWorkspace };
+    });
+
+    await appendAuditLog({
+      workspaceId: workspace.id,
+      userId: user.id,
+      action: 'USER_CREATED',
+      summary: `Account created for ${email}`,
+      ipAddress: request.ip,
+      userAgent: request.get('user-agent') ?? null,
+    });
+    return this.issueSession(user.id, request);
+  }
+
+  async login(input: LoginInput, request: Request) {
+    const user = await prisma.user.findUnique({ where: { email: input.email } });
+    // Uniform failure message: never disclose whether the email exists.
+    const invalid = new UnauthorizedException({ code: 'UNAUTHENTICATED', message: 'Invalid email or password' });
+    if (!user || user.deletedAt || user.status !== 'ACTIVE') throw invalid;
+    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+      throw new ForbiddenException({ code: 'FORBIDDEN', message: 'Account temporarily locked after repeated failed logins' });
+    }
+    // A Google-only account has no hash. Verifying argon2.verify(undefined, …) would throw a 500,
+    // so treat it exactly like a wrong password — the message must not reveal which case it is.
+    const ok = user.passwordHash ? await argon2.verify(user.passwordHash, input.password) : false;
+    if (!ok) {
+      const attempts = user.failedLoginAttempts + 1;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: attempts,
+          lockedUntil: attempts >= MAX_FAILED_ATTEMPTS ? new Date(Date.now() + LOCK_MINUTES * 60_000) : null,
+        },
+      });
+      void this.security.recordLogin(user.id, 'FAILED_PASSWORD', 'PASSWORD', request, { detail: 'wrong password' });
+      throw invalid;
+    }
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { failedLoginAttempts: 0, lockedUntil: null },
+    });
+
+    // Second factor: when the account has an OTP policy, NO session is created here. The caller
+    // receives one challenge per required channel and the session only exists after both verify.
+    const stepUp = await this.security.beginStepUp(user, request);
+    if (stepUp) return stepUp;
+
+    const suspicious = await this.security.isSuspicious(user.id, request);
+    const session = await this.issueSession(user.id, request);
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await this.security.recordLogin(user.id, 'SUCCESS', 'PASSWORD', request, { suspicious });
+    await appendAuditLog({
+      workspaceId: session.workspaceId,
+      userId: user.id,
+      action: 'AUTH_LOGIN',
+      summary: `Login from ${request.ip ?? 'unknown ip'}`,
+      ipAddress: request.ip,
+      userAgent: request.get('user-agent') ?? null,
+    });
+    if (suspicious) await this.security.alertIfSuspicious(user, request);
+    return session;
+  }
+
+  /**
+   * Sign in with a Firebase ID token (Google, or any provider enabled in the Firebase project).
+   *
+   * The token proves identity; authorisation is still decided here:
+   *  - an unknown email is refused unless FIREBASE_ALLOW_NEW_USERS=true,
+   *  - a Firebase identity already linked to another row is refused (no account takeover by
+   *    re-using an email at a second provider),
+   *  - disabled/deleted users are refused before any session is issued.
+   * The resulting session is identical to a password login: same cookie, same CSRF, same audit log.
+   */
+  async loginWithFirebase(idToken: string, request: Request) {
+    const identity = await this.firebase.verifyIdToken(idToken);
+    const user = await this.resolveFirebaseUser(identity);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date(), failedLoginAttempts: 0, lockedUntil: null },
+    });
+    const session = await this.issueSession(user.id, request);
+    await appendAuditLog({
+      workspaceId: session.workspaceId,
+      userId: user.id,
+      action: 'AUTH_LOGIN',
+      summary: `Login via ${identity.signInProvider} from ${request.ip ?? 'unknown ip'}`,
+      ipAddress: request.ip,
+      userAgent: request.get('user-agent') ?? null,
+    });
+    return session;
+  }
+
+  /** A signed Telegram OIDC subject maps only by its immutable provider ID, never by username/name. */
+  async loginWithTelegram(identity: TelegramOidcIdentity, request: Request) {
+    const user = await this.resolveTelegramUser(identity);
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date(), failedLoginAttempts: 0, lockedUntil: null } });
+    const session = await this.issueSession(user.id, request);
+    await this.security.recordLogin(user.id, 'SUCCESS', 'TELEGRAM', request);
+    await appendAuditLog({
+      workspaceId: session.workspaceId,
+      userId: user.id,
+      action: 'AUTH_LOGIN',
+      summary: `Login via Telegram OpenID Connect from ${request.ip ?? 'unknown ip'}`,
+      ipAddress: request.ip,
+      userAgent: request.get('user-agent') ?? null,
+    });
+    return session;
+  }
+
+  async resolveTelegramUser(identity: TelegramOidcIdentity) {
+    try {
+      const resolved = await prisma.$transaction(async (tx) => {
+        const [byLogin, byBotConnection] = await Promise.all([
+          tx.user.findUnique({ where: { telegramLoginId: identity.id } }),
+          tx.user.findUnique({ where: { telegramUserId: identity.id } }),
+        ]);
+        if (byLogin && byBotConnection && byLogin.id !== byBotConnection.id) {
+          throw new ForbiddenException({ code: 'TELEGRAM_ACCOUNT_CONFLICT', message: 'This Telegram account is linked to conflicting ClipForge accounts. Contact an administrator.' });
+        }
+        const existing = byLogin ?? byBotConnection;
+        if (existing) {
+          if (existing.deletedAt || existing.status !== 'ACTIVE') {
+            throw new ForbiddenException({ code: 'FORBIDDEN', message: 'This account is not active.' });
+          }
+          const user = existing.telegramLoginId
+            ? existing
+            : await tx.user.update({ where: { id: existing.id }, data: { telegramLoginId: identity.id } });
+          return { user, created: false as const, identityLinked: !existing.telegramLoginId };
+        }
+
+        if (!env.TELEGRAM_LOGIN_ALLOW_NEW_USERS) {
+          throw new ForbiddenException({
+            code: 'FORBIDDEN',
+            message: 'No ClipForge account is linked to this Telegram account. Ask an administrator to create one or enable TELEGRAM_LOGIN_ALLOW_NEW_USERS.',
+          });
+        }
+
+        const email = `telegram+${identity.id}@users.telegram.invalid`;
+        const displayName = identity.name?.trim().slice(0, 120) || (identity.username ? `@${identity.username}` : `Telegram user ${identity.id.slice(-4)}`);
+        const workspaceName = `${displayName}'s workspace`.slice(0, 120);
+        const slug = `${slugify(workspaceName).slice(0, 37)}-${randomBytes(5).toString('hex')}`;
+        const createdUser = await tx.user.create({
+          data: {
+            email,
+            displayName,
+            role: 'OWNER',
+            passwordHash: null,
+            telegramLoginId: identity.id,
+            avatarUrl: identity.picture,
+            emailVerified: false,
+          },
+        });
+        const createdWorkspace = await tx.workspace.create({ data: { name: workspaceName, slug, timezone: null } });
+        await tx.workspaceMember.create({ data: { workspaceId: createdWorkspace.id, userId: createdUser.id, role: 'OWNER' } });
+        return { user: createdUser, created: true as const, identityLinked: true, workspaceId: createdWorkspace.id };
+      }, { isolationLevel: 'Serializable' });
+      if (resolved.created) {
+        await appendAuditLog({
+          workspaceId: resolved.workspaceId,
+          userId: resolved.user.id,
+          action: 'USER_CREATED',
+          summary: 'Account provisioned by Telegram sign-in',
+        });
+      }
+      if (resolved.identityLinked) {
+        await appendAuditLog({
+          userId: resolved.user.id,
+          action: 'AUTH_TELEGRAM_LINKED',
+          summary: 'Telegram OpenID Connect identity linked to this ClipForge account',
+        });
+      }
+      return resolved.user;
+    } catch (error) {
+      // Simultaneous first logins for one Telegram subject may race on the unique provider key.
+      const code = (error as { code?: string })?.code;
+      if (code === 'P2002' || code === 'P2034') {
+        const [byLogin, byBotConnection] = await Promise.all([
+          prisma.user.findUnique({ where: { telegramLoginId: identity.id } }),
+          prisma.user.findUnique({ where: { telegramUserId: identity.id } }),
+        ]);
+        if (byLogin && byBotConnection && byLogin.id !== byBotConnection.id) {
+          throw new ForbiddenException({ code: 'TELEGRAM_ACCOUNT_CONFLICT', message: 'This Telegram account is linked to conflicting ClipForge accounts. Contact an administrator.' });
+        }
+        const existing = byLogin ?? byBotConnection;
+        if (existing) {
+          if (existing.deletedAt || existing.status !== 'ACTIVE') throw new ForbiddenException({ code: 'FORBIDDEN', message: 'This account is not active.' });
+          if (existing.telegramLoginId && existing.telegramLoginId !== identity.id) {
+            throw new ForbiddenException({ code: 'TELEGRAM_ACCOUNT_CONFLICT', message: 'This ClipForge account is linked to a different Telegram login.' });
+          }
+          return existing;
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Maps a verified provider identity onto a ClipForge user, or refuses.
+   *
+   * Kept separate from token verification and from session issuing so the rules below can be
+   * tested directly — they are the security-relevant part, and they must never be implied by the
+   * client. Rules:
+   *  - an unknown email is refused unless FIREBASE_ALLOW_NEW_USERS=true,
+   *  - a Firebase identity already linked to another row is refused,
+   *  - an inactive or deleted account is refused before any session exists,
+   *  - an unverified provider email is refused when FIREBASE_REQUIRE_VERIFIED_EMAIL=true,
+   *  - an existing password account is *linked*, never replaced: its password keeps working.
+   */
+  async resolveFirebaseUser(identity: FirebaseIdentity) {
+    if (!identity.email) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message: 'That Google account did not share an email address, so it cannot be matched to a ClipForge user.',
+      });
+    }
+    if (env.FIREBASE_REQUIRE_VERIFIED_EMAIL && !identity.emailVerified) {
+      throw new ForbiddenException({
+        code: 'EMAIL_NOT_VERIFIED',
+        message: 'That Google account’s email is not verified. Verify it with the provider, then try again.',
+      });
+    }
+
+    const email = identity.email;
+    let user = await prisma.user.findFirst({ where: { OR: [{ firebaseUid: identity.uid }, { email }] } });
+
+    if (user) {
+      if (user.deletedAt || user.status !== 'ACTIVE') {
+        throw new ForbiddenException({ code: 'FORBIDDEN', message: 'This account is not active' });
+      }
+      if (user.firebaseUid && user.firebaseUid !== identity.uid) {
+        throw new ForbiddenException({
+          code: 'FORBIDDEN',
+          message: 'This email is already linked to a different Google account. Sign in with the account you used before.',
+        });
+      }
+      if (!user.firebaseUid) {
+        // First Google sign-in for an existing password account: link, never merge.
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            firebaseUid: identity.uid,
+            emailVerified: identity.emailVerified || user.emailVerified,
+            avatarUrl: identity.picture ?? user.avatarUrl,
+          },
+        });
+      }
+      return user;
+    }
+
+    if (!env.FIREBASE_ALLOW_NEW_USERS) {
+      throw new ForbiddenException({
+        code: 'FORBIDDEN',
+        message:
+          'No ClipForge account uses this Google address. Ask an administrator to create one, or enable FIREBASE_ALLOW_NEW_USERS.',
+      });
+    }
+    return this.createFirebaseUser(identity);
+  }
+
+  /** Provisioning path for FIREBASE_ALLOW_NEW_USERS: a Google user gets their own workspace. */
+  private async createFirebaseUser(identity: FirebaseIdentity) {
+    const email = identity.email as string;
+    const displayName = identity.name?.trim() || email.split('@')[0];
+    const workspaceName = `${displayName}'s workspace`;
+    let slug = slugify(workspaceName);
+    if (await prisma.workspace.findUnique({ where: { slug } })) slug = `${slug}-${Math.random().toString(36).slice(2, 7)}`;
+    try {
+      const { user, workspace } = await prisma.$transaction(async (tx) => {
+        const createdUser = await tx.user.create({
+          data: {
+            email,
+            displayName,
+            role: 'OWNER',
+            passwordHash: null,
+            firebaseUid: identity.uid,
+            avatarUrl: identity.picture,
+            emailVerified: identity.emailVerified,
+          },
+        });
+        const createdWorkspace = await tx.workspace.create({ data: { name: workspaceName, slug, timezone: null } });
+        await tx.workspaceMember.create({ data: { workspaceId: createdWorkspace.id, userId: createdUser.id, role: 'OWNER' } });
+        return { user: createdUser, workspace: createdWorkspace };
+      });
+      await appendAuditLog({
+        workspaceId: workspace.id,
+        userId: user.id,
+        action: 'USER_CREATED',
+        summary: `Account provisioned by Google sign-in for ${email}`,
+      });
+      return user;
+    } catch (error) {
+      // Two simultaneous first sign-ins race on the unique email/uid; the loser adopts the winner.
+      const existing = await prisma.user.findFirst({ where: { OR: [{ email }, { firebaseUid: identity.uid }] } });
+      if (existing) return existing;
+      throw error;
+    }
+  }
+
+  private async issueSession(userId: string, request: Request) {
+    const issued = await this.sessions.issue(userId, request);
+    if (!issued) throw new ForbiddenException({ code: 'FORBIDDEN', message: 'User has no workspace' });
+    return issued;
+  }
+
+  /** Aggregated view for GET /api/auth/session. */
+  async describeSession(context: {
+    userId: string;
+    workspaceId: string;
+  }) {
+    const membership = await prisma.workspaceMember.findFirst({
+      where: { userId: context.userId, workspaceId: context.workspaceId },
+      include: { user: true, workspace: true },
+    });
+    if (!membership) throw new UnauthorizedException({ code: 'UNAUTHENTICATED', message: 'Session workspace no longer accessible' });
+
+    const configService = new ConfigurationService(context.workspaceId);
+    // NB: a successful resolution still carries a `missing: []` property, so readiness must be
+    // tracked with an explicit flag rather than by testing for the presence of the property.
+    const processing = await configService
+      .requireForProcessing()
+      .then(() => ({ ready: true, missing: [] as string[] }))
+      .catch((e: Error & { missing?: string[] }) => ({ ready: false, missing: e.missing ?? (['unknown'] as string[]) }));
+    const publishing = await configService
+      .requireForPublishing()
+      .then(() => ({ ready: true, missing: [] as string[] }))
+      .catch((e: Error & { missing?: string[] }) => ({ ready: false, missing: e.missing ?? (['unknown'] as string[]) }));
+    const integration = ConfigurationService.integrationStatus();
+
+    return {
+      user: {
+        id: membership.user.id,
+        // Telegram OIDC has no email claim. The required legacy email column gets a reserved
+        // .invalid alias, which must never be presented as a reachable address.
+        email: membership.user.email.endsWith('@users.telegram.invalid') ? 'Telegram account' : membership.user.email,
+        displayName: membership.user.displayName,
+        role: membership.role,
+        avatarUrl: membership.user.avatarUrl,
+        authMethods: [
+          ...(membership.user.passwordHash ? ['PASSWORD'] : []),
+          ...(membership.user.firebaseUid ? ['GOOGLE'] : []),
+          ...(membership.user.telegramLoginId ? ['TELEGRAM'] : []),
+          ...(membership.user.telegramUserId ? ['TELEGRAM_BOT'] : []),
+        ],
+      },
+      workspace: {
+        id: membership.workspace.id,
+        name: membership.workspace.name,
+        slug: membership.workspace.slug,
+        timezone: membership.workspace.timezone,
+      },
+      configuration: {
+        processingReady: processing.ready,
+        publishingReady: publishing.ready,
+        missing: Array.from(new Set([...processing.missing, ...publishing.missing])),
+      },
+      integrations: integration,
+    };
+  }
+}
+
+function slugify(value: string): string {
+  const base = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+    .slice(0, 48);
+  return base.length > 0 ? base : `workspace-${Math.random().toString(36).slice(2, 8)}`;
+}

@@ -1,0 +1,362 @@
+'use client';
+
+import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  useConfiguration,
+  useIsOperator,
+  useSaveConfiguration,
+  useSession,
+  useStartTelegramConnection,
+  useSecurityOverview,
+  useSystemOverview,
+  useUnlinkTelegram,
+} from '@/lib/hooks';
+import { CONFIG_FIELDS, CONFIG_GROUPS, type ConfigField } from '@/lib/config-schema';
+import { Badge, Card, CardHeader, ErrorState, Field, Section, Skeleton, StatusBadge, Toast } from '@/components/ui';
+
+type Draft = Record<string, string | boolean>;
+
+function toDraft(values: Record<string, unknown>): Draft {
+  const draft: Draft = {};
+  for (const field of CONFIG_FIELDS) {
+    const value = values[field.key];
+    if (value === undefined || value === null) continue;
+    draft[field.key] = field.kind === 'boolean' ? Boolean(value) : Array.isArray(value) ? value.join(', ') : String(value);
+  }
+  return draft;
+}
+
+function parseValue(field: ConfigField, raw: string | boolean): unknown {
+  if (field.kind === 'boolean') return Boolean(raw);
+  const text = String(raw).trim();
+  if (field.kind === 'integer') return Number.parseInt(text, 10);
+  if (field.kind === 'number') return Number.parseFloat(text);
+  if (field.kind === 'list') return text.split(',').map((item) => item.trim()).filter(Boolean);
+  return text;
+}
+
+export default function SettingsPage() {
+  const configuration = useConfiguration();
+  const session = useSession();
+  // Configuration writes are OWNER/ADMIN only on the API; members get a read-only view instead of
+  // a form whose save button can only produce a 403.
+  const isOperator = useIsOperator();
+  const system = useSystemOverview(isOperator);
+  const save = useSaveConfiguration();
+  const security = useSecurityOverview();
+  const { data: securityData, isLoading: securityLoading, refetch: refetchSecurity } = security;
+  const startTelegram = useStartTelegramConnection();
+  const unlinkTelegram = useUnlinkTelegram();
+  const [draft, setDraft] = useState<Draft>({});
+  const [dirty, setDirty] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [telegramLink, setTelegramLink] = useState<{ deepLink: string; expiresAt: string } | null>(null);
+
+  useEffect(() => {
+    if (configuration.data && dirty.size === 0) setDraft(toDraft(configuration.data.values));
+  }, [configuration.data, dirty.size]);
+
+  useEffect(() => {
+    if (!telegramLink || securityData?.telegram.connected) return;
+    const interval = window.setInterval(() => {
+      if (Date.now() >= new Date(telegramLink.expiresAt).getTime()) {
+        setTelegramLink(null);
+        return;
+      }
+      void refetchSecurity();
+    }, 3_000);
+    return () => window.clearInterval(interval);
+  }, [telegramLink, securityData?.telegram.connected, refetchSecurity]);
+
+  const missing = useMemo(() => configuration.data?.missingForProcessing ?? [], [configuration.data]);
+  if (configuration.isLoading) return <Card><Skeleton rows={8} /></Card>;
+  if (configuration.error) return <ErrorState message={configuration.error.message} onRetry={() => void configuration.refetch()} />;
+  const data = configuration.data!;
+
+  const setValue = (key: string, value: string | boolean) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+    setDirty((current) => new Set(current).add(key));
+    setSaved(false);
+  };
+
+  const submit = () => {
+    setError(null);
+    const entries: Array<{ key: string; value: unknown }> = [];
+    for (const key of dirty) {
+      const field = CONFIG_FIELDS.find((item) => item.key === key);
+      if (!field) continue;
+      const raw = draft[key];
+      if (raw === undefined || raw === '') continue;
+      const value = parseValue(field, raw);
+      if ((field.kind === 'integer' || field.kind === 'number') && typeof value === 'number' && Number.isNaN(value)) {
+        setError(`${field.label} expects a number`);
+        return;
+      }
+      entries.push({ key, value });
+    }
+    if (entries.length === 0) {
+      setError('Nothing changed yet — update at least one setting before saving.');
+      return;
+    }
+    save.mutate(entries, {
+      onSuccess: () => {
+        setDirty(new Set());
+        setSaved(true);
+        void configuration.refetch();
+      },
+      onError: (mutationError: Error) => setError(mutationError.message),
+    });
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-ink">Configuration</h1>
+          <p className="mt-0.5 text-[13px] text-ink-soft">
+            Nothing has a built-in default. Processing stays blocked until every required value is set explicitly.
+          </p>
+        </div>
+        {isOperator ? (
+          <div className="flex items-center gap-2">
+            <button type="button" className="btn-ghost" onClick={() => { setDraft(toDraft(data.values)); setDirty(new Set()); setSaved(false); }}>Reset changes</button>
+            <button type="button" className="btn-primary" onClick={submit} disabled={save.isPending || dirty.size === 0}>
+              {save.isPending ? 'Saving…' : `Save ${dirty.size > 0 ? `${dirty.size} change(s)` : ''}`}
+            </button>
+          </div>
+        ) : (
+          <Badge tone="neutral">Read-only · operators only</Badge>
+        )}
+      </div>
+
+      {missing.length > 0 ? (
+        <ErrorState code="CONFIGURATION_REQUIRED" message="Configuration required — processing cannot start." missing={missing} />
+      ) : (
+        <div className="rounded-xl2 border border-positive/30 bg-positive-soft px-4 py-3 text-[13px] text-positive">
+          All required processing configuration is present. Publishing still requires an enabled connected account.
+        </div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="px-5 py-4">
+          <p className="text-[13px] font-semibold text-ink">Environment integrations</p>
+          <p className="mt-0.5 text-xs text-ink-faint">Read from server environment variables — never stored in the database or exposed to the browser.</p>
+          <ul className="mt-3 space-y-1.5 text-[13px]">
+            {system.data
+              ? [
+                  system.data.readiness.components.ai,
+                  system.data.readiness.components.vp,
+                  system.data.readiness.components.storage,
+                  ...system.data.readiness.components.integration,
+                ].map((component) => (
+                  <li key={component.component} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    <span className="min-w-0 text-ink-soft">{component.component}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 max-w-[190px] truncate text-xs text-ink-faint">{component.message}</span>
+                      <span className="shrink-0"><StatusBadge value={component.status} /></span>
+                    </span>
+                  </li>
+                ))
+              : <Skeleton rows={3} />}
+          </ul>
+        </Card>
+        <Card className="px-5 py-4">
+          <p className="text-[13px] font-semibold text-ink">Publishing readiness</p>
+          <p className="mt-0.5 text-xs text-ink-faint">Meta Graph API version is pinned in the API environment.</p>
+          <div className="mt-3 space-y-1.5 text-[13px]">
+            <div className="flex items-center justify-between">
+              <span className="text-ink-soft">Graph API version</span>
+              <Badge tone={system.data?.graphApiVersion ? 'positive' : 'caution'}>{system.data?.graphApiVersion ?? 'not set'}</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-soft">Storage driver</span>
+              <Badge tone="neutral">{system.data?.storage.driver ?? '—'}</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-ink-soft">Public media base URL</span>
+              <Badge tone={system.data?.storage.publicUrlConfigured ? 'positive' : 'caution'}>
+                {system.data?.storage.publicUrlConfigured ? 'configured' : 'not configured'}
+              </Badge>
+            </div>
+            {data.missingForPublishing.length > 0 ? (
+              <p className="pt-1 text-xs text-caution">Publishing keys missing: {data.missingForPublishing.join(', ')}</p>
+            ) : null}
+            <Link href="/accounts" className="inline-flex min-h-[24px] items-center pt-1 text-xs font-medium text-accent hover:underline">Manage accounts →</Link>
+          </div>
+        </Card>
+      </div>
+
+      {error ? <ErrorState message={error} /> : null}
+      {saved ? <Toast tone="positive" onClose={() => setSaved(false)}>Configuration saved and audited.</Toast> : null}
+
+      {!isOperator ? (
+        <Card className="px-5 py-4">
+          <p className="text-[13px] font-semibold text-ink">Read-only view</p>
+          <p className="mt-1 text-[13px] text-ink-soft">
+            Only workspace owners and admins can change processing configuration, brand assets, connected accounts
+            and automatic publishing. Ask an owner if a value needs to change.
+          </p>
+        </Card>
+      ) : null}
+
+      {isOperator ? (
+        <Card className="px-5 py-4">
+          <p className="text-[13px] font-semibold text-ink">Telegram integration</p>
+          <p className="mt-1 text-[13px] text-ink-soft">
+            Telegram notifications, webhook/control settings, and connection status are managed in Admin → Notifications. Bot tokens, webhook secrets, and OTPs are server-side only.
+          </p>
+        </Card>
+      ) : null}
+
+      {!isOperator ? null : CONFIG_GROUPS.map((group) => (
+        <Card key={group}>
+          <CardHeader title={group} description={`${CONFIG_FIELDS.filter((field) => field.group === group).length} setting(s)`} />
+          <div className="grid gap-4 px-5 py-5 md:grid-cols-2">
+            {CONFIG_FIELDS.filter((field) => field.group === group).map((field) => {
+              const value = draft[field.key];
+              const isMissing = missing.includes(field.key);
+              return (
+                <div key={field.key} className={isMissing ? 'rounded-lg bg-danger-soft/40 p-2' : undefined}>
+                  <Field
+                    label={field.label}
+                    hint={field.hint}
+                    required={data.requiredForProcessing.includes(field.key) || data.requiredForPublishing.includes(field.key)}
+                  >
+                    {field.kind === 'boolean' ? (
+                      <label className="flex items-center gap-2 text-[13px] text-ink-soft">
+                        <input type="checkbox" checked={Boolean(value)} onChange={(event) => setValue(field.key, event.target.checked)} />
+                        {value === undefined ? 'Not set' : value ? 'Enabled' : 'Disabled'}
+                      </label>
+                    ) : field.kind === 'select' ? (
+                      <select className="input" value={value === undefined ? '' : String(value)} onChange={(event) => setValue(field.key, event.target.value)}>
+                        <option value="">Select…</option>
+                        {field.options!.map((option) => (
+                          <option key={String(option.value)} value={String(option.value)}>{option.label}</option>
+                        ))}
+                      </select>
+                    ) : field.kind === 'preset' ? (
+                      <select className="input" value={value === undefined ? '' : String(value)} onChange={(event) => setValue(field.key, event.target.value)}>
+                        <option value="">Select…</option>
+                        {data.subtitlePresets.map((preset) => (
+                          <option key={preset.id} value={preset.id}>{preset.name}{preset.isSystem ? ' (system)' : ''}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        className="input"
+                        type={field.kind === 'integer' || field.kind === 'number' ? 'number' : 'text'}
+                        step={field.kind === 'number' ? 'any' : undefined}
+                        min={field.min}
+                        max={field.max}
+                        value={value === undefined ? '' : String(value)}
+                        placeholder={field.kind === 'integer' || field.kind === 'number' ? 'Required' : 'Required'}
+                        onChange={(event) => setValue(field.key, event.target.value)}
+                      />
+                    )}
+                  </Field>
+                  <p className="mt-1 font-mono text-[11px] text-ink-faint">{field.key}{isMissing ? ' · missing' : ''}</p>
+                </div>
+              );
+            })}
+          </div>
+          {group === 'Subtitles' ? (
+            <p className="border-t border-line px-5 py-3 text-xs text-ink-soft">
+              Need a new style? <Link href="/brand" className="inline-flex min-h-[24px] items-center font-medium text-accent hover:underline">Create a subtitle preset in Brand studio</Link>.
+            </p>
+          ) : null}
+        </Card>
+      ))}
+
+      <Section title="Your account" description="Identity is verified by the API on every request; sign-in methods are read-only here">
+        <Card>
+          <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+            {session.data?.user?.avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- external Google avatar, no layout shift to optimise
+              <img src={session.data.user.avatarUrl} alt="" className="h-10 w-10 rounded-full border border-line object-cover" referrerPolicy="no-referrer" />
+            ) : (
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-ink text-[13px] font-semibold text-white">
+                {(session.data?.user?.displayName ?? '?').slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-[14px] font-medium text-ink">{session.data?.user?.displayName}</p>
+              <p className="truncate text-[12.5px] text-ink-soft">{session.data?.user?.email}</p>
+            </div>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {(session.data?.user?.authMethods?.length ? session.data.user.authMethods : ['PASSWORD']).map((method) => (
+                <StatusBadge key={method} value={method === 'GOOGLE' ? 'CONNECTED' : 'ACTIVE'} />
+              ))}
+              <span className="text-[11.5px] text-ink-faint">
+                {(session.data?.user?.authMethods ?? ['PASSWORD']).includes('GOOGLE') ? 'Google linked' : 'Google not linked'}
+                {' · '}
+                {(session.data?.user?.authMethods ?? []).includes('TELEGRAM') ? 'Telegram sign-in linked' : 'Telegram sign-in not linked'}
+              </span>
+            </div>
+          </div>
+          <p className="border-t border-line px-5 py-3 text-[12px] leading-relaxed text-ink-soft">
+            To link Google, sign out and choose <strong>Continue with Google</strong> using this same
+            email address — the API links the identities and your password keeps working. To unlink,
+            an operator clears <code className="rounded bg-surface-sunken px-1">firebaseUid</code> on this row.
+          </p>
+        </Card>
+      </Section>
+
+      <Section title="Telegram connection" description="Connect the bot to your own Telegram account with a short-lived, single-use link">
+        <Card className="px-5 py-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-semibold text-ink">{securityData?.telegram.connected ? 'Telegram bot connected' : securityData?.telegram.linked ? 'Telegram chat linked' : 'No Telegram bot connection'}</p>
+              <p className="mt-1 text-[12px] text-ink-soft">
+                {securityData?.telegram.username
+                  ? `Connected as @${securityData.telegram.username}.`
+                  : securityData?.telegram.connected
+                    ? 'This Telegram account can receive ClipForge bot notifications.'
+                    : 'Link your personal Telegram account to receive notifications and use bot commands.'}
+              </p>
+            </div>
+            {securityData?.telegram.connected || securityData?.telegram.linked ? (
+              <button type="button" className="btn-secondary" disabled={unlinkTelegram.isPending} onClick={() => { setTelegramLink(null); unlinkTelegram.mutate(); }}>
+                {unlinkTelegram.isPending ? 'Disconnecting…' : 'Disconnect'}
+              </button>
+            ) : null}
+            {!securityData?.telegram.connected ? (
+              <button type="button" className="btn-primary" disabled={startTelegram.isPending || securityLoading} onClick={() => startTelegram.mutate(undefined, { onSuccess: setTelegramLink })}>
+                {startTelegram.isPending ? 'Preparing link…' : 'Connect Telegram'}
+              </button>
+            ) : null}
+          </div>
+          {telegramLink ? (
+            <div className="mt-4 rounded-lg border border-line bg-surface-muted px-3.5 py-3">
+              <p className="text-[12.5px] font-medium text-ink">Open the one-time Telegram link before it expires.</p>
+              <a href={telegramLink.deepLink} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex min-h-9 items-center rounded-lg bg-[#229ED9] px-3.5 text-[12.5px] font-semibold text-white hover:bg-[#168ac0]">Open Telegram bot</a>
+              <p className="mt-2 text-[11px] text-ink-faint">Expires {new Date(telegramLink.expiresAt).toLocaleTimeString()}.</p>
+            </div>
+          ) : null}
+          {startTelegram.error ? <p role="alert" className="mt-3 text-[12px] text-danger">{startTelegram.error.message}</p> : null}
+          {unlinkTelegram.error ? <p role="alert" className="mt-3 text-[12px] text-danger">{unlinkTelegram.error.message}</p> : null}
+        </Card>
+      </Section>
+
+      <Section title="Session & security" description="Applied by the API, not configurable from the browser">
+        <Card>
+          <ul className="divide-y divide-line text-[13px]">
+            {[
+              ['Password hashing', 'Argon2id with per-user salt'],
+              ['Session', 'HMAC-signed cookie, HttpOnly, SameSite=Lax, DB-backed revocation'],
+              ['CSRF', 'Double-submit token, verified server-side on every mutating request'],
+              ['Credentials at rest', 'AES-256-GCM with an environment-provided key'],
+              ['Audit trail', 'Every mutation writes an append-only audit row'],
+            ].map(([label, value]) => (
+              <li key={label} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                <span className="font-medium text-ink">{label}</span>
+                <span className="text-ink-soft">{value}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      </Section>
+    </div>
+  );
+}

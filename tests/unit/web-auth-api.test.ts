@@ -48,3 +48,16 @@ it('invalidates a rejected CSRF token without replaying a state-changing request
   expect(fetchMock.mock.calls[1]).toEqual(['/api/auth/csrf', { credentials: 'include', cache: 'no-store' }]);
   expect(fetchMock.mock.calls[2][1].headers['x-csrf-token']).toBe('fresh-token');
 });
+
+it('retains CSRF request IDs and distinguishes token failure from origin rejection', async () => {
+  fetchMock.mockResolvedValue(json({ error: { code: 'CSRF_FAILED', message: 'Invalid token', requestId: 'csrf-trace' } }, 403));
+  let failure: unknown;
+  try { await api('/api/auth/login', { method: 'POST' }); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ requestId: 'csrf-trace' });
+  const { describeAuthError } = await import('../../apps/web/lib/auth-messages');
+  expect(describeAuthError(failure)).toMatchObject({ title: 'Security token rejected', message: expect.stringContaining('csrf-trace') });
+});
+it('retains provider request IDs from the response header when absent from the envelope', async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' } }), { status: 500, headers: { 'content-type': 'application/json', 'x-request-id': 'provider-trace' } }));
+  await expect(api('/api/auth/providers')).rejects.toMatchObject({ requestId: 'provider-trace' });
+});

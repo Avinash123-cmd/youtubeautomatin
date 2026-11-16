@@ -1,6 +1,7 @@
 import { Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { applicationDefault, cert, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { z } from 'zod';
 import { env } from '../common/env';
 
 /** What the API trusts after verifying a Firebase ID token. */
@@ -41,7 +42,12 @@ export class FirebaseService {
   private serviceAccount(): Record<string, string> | null {
     if (env.FIREBASE_SERVICE_ACCOUNT_JSON) {
       try {
-        const parsed = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON) as Record<string, string>;
+        const result = z.object({ project_id: z.string().min(1), client_email: z.string().email(), private_key: z.string().min(1) }).safeParse(JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON));
+        if (!result.success) {
+          this.initError = 'FIREBASE_SERVICE_ACCOUNT_JSON must contain string project_id, client_email and private_key fields';
+          return null;
+        }
+        const parsed = result.data;
         if (parsed.private_key) parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
         return parsed;
       } catch {
@@ -107,8 +113,9 @@ export class FirebaseService {
       } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
         this.app = getApps()[0] ?? initializeApp({ credential: applicationDefault() });
       }
-    } catch (error) {
-      this.initError = (error as Error).message;
+    } catch {
+      // SDK errors may contain credential details; expose a fixed configuration diagnosis only.
+      this.initError = 'Firebase service account could not be initialized. Check the configured project, email and private key.';
       this.app = null;
     }
     if (this.initError) this.logger.error(`Firebase Auth is configured but unusable: ${this.initError}`);

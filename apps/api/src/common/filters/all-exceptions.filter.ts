@@ -57,7 +57,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       // Never expose database, network or provider exception text to clients.
-      workerLogger.child({ requestId }).error('unhandled exception', exception.stack);
+      // Pino's second string argument is not a stack field. Record structured call-site frames
+      // (without the exception message, which may contain credentials/provider responses).
+      const frames = exception.stack?.split('\n').filter(line => /^\s+at /.test(line)).slice(0, 12);
+      workerLogger.child({ requestId, method: request.method, path: request.path }).error({ errorType: exception.name, frames }, 'unhandled exception');
     }
 
     const payload = { error: { code, message, ...(details ? { details } : {}), ...(missingConfiguration ? { missingConfiguration } : {}), requestId } };

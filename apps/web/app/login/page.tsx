@@ -81,7 +81,7 @@ export default function LoginPage() {
   }, []);
 
   // No API means no login: show the deployment diagnosis rather than a form that cannot succeed.
-  if (session.error) return <BackendDown message={session.error.message} onRetry={() => void session.refetch()} />;
+  if (session.error) return <BackendDown message={describeAuthError(session.error).message} onRetry={() => void session.refetch()} />;
 
   // The password was right but the account has a second factor. No session exists yet, so this is a
   // distinct screen: it must not look like a fresh login, and it must not offer a way to skip.
@@ -284,7 +284,15 @@ export default function LoginPage() {
 
             {mode === 'login' ? (
               <>
-                <GoogleSignInButton onClick={withGoogle} pending={firebaseLogin.isPending} disabled={!googleReady || submitted} />
+                {providers.isPending ? <p role="status" className="mb-3 text-sm text-ink-soft">Loading sign-in providers…</p> : null}
+                {providers.error ? (
+                  <div role="alert" className="mb-3 rounded-lg bg-danger-soft p-3 text-sm text-danger">
+                    <p>Could not load sign-in providers: {describeAuthError(providers.error).message}</p>
+                    <p>Email/password sign-in remains available. OAuth availability could not be determined.</p>
+                    <button type="button" className="mt-2 underline" disabled={providers.isFetching} onClick={() => void providers.refetch()}>{providers.isFetching ? 'Retrying…' : 'Retry provider discovery'}</button>
+                  </div>
+                ) : null}
+                {googleReady ? <GoogleSignInButton onClick={withGoogle} pending={firebaseLogin.isPending} disabled={submitted} /> : null}
                 {!googleReady && providers.data ? (
                   <p className="mt-2 text-[11.5px] leading-relaxed text-ink-faint">
                     {google?.error

@@ -85,6 +85,19 @@ for ctrl in apps/api/src/*/*.controller.ts; do
   [ -e "$ctrl" ] || continue
   class=$(grep -oE 'export class [A-Za-z]+' "$ctrl" | head -1 | awk '{print $3}')
   [ -z "$class" ] && { bad "$ctrl declares no controller class"; orphans=$((orphans + 1)); continue; }
+  # These exact historical controllers MUST remain unregistered after the Telegram-only cutover.
+  # This is a negative security assertion, not a blanket orphan-controller exemption.
+  case "$ctrl" in
+    apps/api/src/auth/auth.controller.ts|apps/api/src/auth/security.controller.ts)
+      if grep -rqE "\\b$class\\b" apps/api/src --include=*.module.ts; then
+        bad "$class is a retired authentication controller but is registered"
+        orphans=$((orphans + 1))
+      else
+        ok "$class is intentionally retired and cannot expose alternative authentication"
+      fi
+      continue
+      ;;
+  esac
   if grep -rqE "controllers:[^]]*\b$class\b|\b$class\b" apps/api/src --include=*.module.ts \
        --include=app.module.ts; then
     ok "$class is registered"

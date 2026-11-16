@@ -165,7 +165,7 @@ npm run test:unit           # 60 tests, no I/O
 | 2 | every area has a `README.md` | a directory you cannot explain in three lines is a directory that is wrong |
 | 3 | the repository root holds only entry points | root clutter is how `scripts/`, `infrastructure/` and stray dumps start |
 | 4 | every `packages/*` is `@clipforge/*` with `build` + `typecheck` | a package nobody can build is not shared, it is dead |
-| 5 | every controller is registered in a module, every module is imported | an unregistered controller is a route that silently 404s |
+| 5 | active controllers are registered; historical AuthController/SecurityController must NOT be registered; every module is imported | prevent dead routes and accidental re-enabling of retired authentication |
 | 6 | tests live only in `tests/` | two test systems in one repo means one of them stops being run |
 | 7 | `apps/*` never import `apps/*` or `services/*` | sideways imports turn the tree into one entangled app |
 | 8 | each Python service has `main.py`, `/health`, `requirements.txt`, snake_case modules | the health endpoint is what makes a container deployable |

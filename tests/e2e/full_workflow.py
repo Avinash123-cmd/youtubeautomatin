@@ -2,7 +2,7 @@
 """End-to-end workflow test against a running ClipForge stack.
 
 Exercises the real HTTP API and the real workers:
-  login → configure workspace → upload a real video (chunked) → submit job →
+  verify an existing Telegram-authenticated session → configure workspace → upload a real video (chunked) → submit job →
   wait for the durable pipeline → download a rendered clip → verify the file.
 
 Assertions are strict; any failure exits non-zero with the server's error body.
@@ -21,8 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 API = os.environ.get("CLIPFORGE_API", "http://127.0.0.1:4000")
-EMAIL = os.environ.get("CLIPFORGE_EMAIL")
-PASSWORD = os.environ.get("CLIPFORGE_PASSWORD")
+SESSION_COOKIE = os.environ.get("CLIPFORGE_SESSION_COOKIE")
 PART_BYTES = 16 * 1024 * 1024
 
 jar = http.cookiejar.CookieJar()
@@ -34,6 +33,8 @@ def request(method: str, path: str, body: dict | None = None, headers: dict | No
     url = f"{API}{path}"
     data = None
     hdrs = dict(headers or {})
+    if SESSION_COOKIE:
+        hdrs["cookie"] = f"cf_session={SESSION_COOKIE}"
     if body is not None:
         data = json.dumps(body).encode()
         hdrs["content-type"] = "application/json"
@@ -81,23 +82,18 @@ def step(message: str) -> None:
 def main() -> int:
     global csrf_token
     video = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CLIPFORGE_TEST_VIDEO")
-    if not video or not EMAIL or not PASSWORD:
-        raise SystemExit("E2E prerequisites: set CLIPFORGE_TEST_VIDEO (speech-bearing video), CLIPFORGE_EMAIL and CLIPFORGE_PASSWORD for a disposable configured stack.")
+    if not video or not SESSION_COOKIE:
+        raise SystemExit("E2E prerequisites: set CLIPFORGE_TEST_VIDEO and a disposable CLIPFORGE_SESSION_COOKIE obtained through real Telegram authentication. Never print or commit the cookie. This pipeline test does not verify Telegram login itself.")
     video_path = Path(video)
     if not video_path.exists():
         raise SystemExit(f"test video not found: {video_path}")
 
-    step("obtaining CSRF token")
-    csrf_token = request("GET", "/api/auth/csrf")["csrfToken"]
-
-    step("logging in")
+    step("verifying the existing Telegram-authenticated session")
     session = request("GET", "/api/auth/session")
-    if not session.get("authenticated"):
-        request("POST", "/api/auth/login", {"email": EMAIL, "password": PASSWORD})
-        session = request("GET", "/api/auth/session")
-    assert session["authenticated"], "session not established"
+    assert session.get("authenticated"), "session not established; authenticate through Telegram first"
+    assert "TELEGRAM_BOT" in session["user"].get("authMethods", []), "a verified bot identity is required"
     csrf_token = session["csrfToken"]
-    step(f"authenticated as {session['user']['email']} in workspace {session['workspace']['name']}")
+    step("Telegram-linked session confirmed; no identity or bearer token logged")
 
     step("writing explicit workspace configuration")
     config = request("GET", "/api/configuration")

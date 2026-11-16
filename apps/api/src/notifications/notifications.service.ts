@@ -16,6 +16,7 @@
  *  5. **No simulation.** Every call site passes a fact taken from a committed database state
  *     (a job transition, a published post row), never from a UI action.
  */
+import { isTelegramWebhookUrl } from '../common/telegram-webhook-url';
 import { Inject, Injectable, Logger, Optional, type OnModuleInit } from '@nestjs/common';
 import { prisma, ConfigurationService } from '@clipforge/database';
 import {
@@ -221,9 +222,9 @@ export class NotificationsService implements OnModuleInit {
       canSend: blockingReason === null,
       blockingReason,
       webhook: {
-        configured: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_USERNAME && env.TELEGRAM_WEBHOOK_SECRET && settings.webhookUrl),
+        configured: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_USERNAME && env.TELEGRAM_WEBHOOK_SECRET && env.TELEGRAM_WEBHOOK_URL),
         username: env.TELEGRAM_BOT_USERNAME ?? null,
-        webhookUrl: settings.webhookUrl,
+        webhookUrl: env.TELEGRAM_WEBHOOK_URL ?? null,
         adminUserIdsCount: settings.adminUserIds.length,
         secretConfigured: Boolean(env.TELEGRAM_WEBHOOK_SECRET),
       },
@@ -238,10 +239,12 @@ export class NotificationsService implements OnModuleInit {
   async registerWebhook(workspaceId: string, input: { webhookUrl?: string | null; dropPendingUpdates?: boolean }, actorUserId: string | null) {
     if (!this.client) return { ok: false as const, error: 'TELEGRAM_BOT_TOKEN is not set on the API' };
     if (!env.TELEGRAM_WEBHOOK_SECRET) return { ok: false as const, error: 'TELEGRAM_WEBHOOK_SECRET is not set on the API' };
-    const settings = await this.settings(workspaceId);
-    const url = (input.webhookUrl ?? settings.webhookUrl ?? '').trim();
-    if (!url) return { ok: false as const, error: 'Webhook URL is required (save it in settings or provide it)' };
-    if (!url.startsWith('https://')) return { ok: false as const, error: 'Webhook URL must use HTTPS' };
+    // This is the deployment's authentication bot, not a workspace-owned bot. Sending its
+    // secret_token to a tenant-chosen URL would give that tenant power to forge identities.
+    const url = env.TELEGRAM_WEBHOOK_URL ?? new URL('/api/auth/telegram/webhook', env.APP_URL).toString();
+    if (input.webhookUrl && input.webhookUrl !== url) return { ok: false as const, error: 'Webhook destination is deployment-controlled; configure TELEGRAM_WEBHOOK_URL on the server.' };
+    if (input.dropPendingUpdates) return { ok: false as const, error: 'Dropping pending authentication updates requires an operator deployment procedure.' };
+    if (!isTelegramWebhookUrl(url)) return { ok: false as const, error: 'Webhook URL must be a public HTTPS hostname with the authentication webhook path. Use an HTTPS tunnel, not localhost or an IP address.' };
     const result = await this.client.setWebhook({ url, secretToken: env.TELEGRAM_WEBHOOK_SECRET, dropPendingUpdates: input.dropPendingUpdates });
     if (result.ok) {
       await ConfigurationService.set(workspaceId, CONFIG_KEYS.TELEGRAM_WEBHOOK_URL, url, actorUserId);

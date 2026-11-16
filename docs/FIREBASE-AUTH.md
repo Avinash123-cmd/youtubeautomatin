@@ -1,3 +1,5 @@
+> **Historical document:** authentication is now Telegram Bot-only. Google, password, OIDC and email recovery routes are not registered. Do not follow legacy provider-enablement steps; see [telegram-bot-only-auth.md](telegram-bot-only-auth.md).
+
 # Connecting Firebase Auth to ClipForge
 
 ## What this changes (and what it deliberately does not)

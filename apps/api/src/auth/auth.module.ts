@@ -1,36 +1,20 @@
-import { Module } from '@nestjs/common';
 import { EmailService } from '../common/services/email.service';
-import { NotificationsModule } from '../notifications/notifications.module';
-import { AuthController } from './auth.controller';
-import { AuthService } from './auth.service';
-import { FirebaseService } from './firebase.service';
 import { OtpService } from './otp.service';
-import { SecurityController } from './security.controller';
-import { SecurityService } from './security.service';
+import { Module } from '@nestjs/common';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { BotAuthController } from './bot-auth.controller';
+import { BotSecurityController } from './bot-security.controller';
 import { SessionService } from './session.service';
-import { TelegramOidcService } from './telegram-oidc.service';
 import { TelegramAccountService } from './telegram-account.service';
+import { TelegramBotLoginService } from './telegram-bot-login.service';
 
-/**
- * `NotificationsModule` is imported for security alerts: a new-device sign-in is delivered through
- * the same channel, dedupe and retry machinery as every other notification, rather than through a
- * second, parallel delivery path that would drift.
+/** Legacy controllers/services remain in source for migration history but are not registered.
+ * No password, Firebase, OIDC, email recovery or recovery-code path can issue a new session.
  */
 @Module({
   imports: [NotificationsModule],
-  controllers: [AuthController, SecurityController],
-  providers: [
-    AuthService,
-    SessionService,
-    FirebaseService,
-    OtpService,
-    SecurityService,
-    TelegramOidcService,
-    TelegramAccountService,
-    // Configuration is read once from the environment at boot; a value provider keeps Nest from
-    // trying to construct the class through its own injector (its constructor takes SMTP options).
-    { provide: EmailService, useValue: new EmailService() },
-  ],
-  exports: [SessionService, AuthService, FirebaseService, SecurityService, TelegramOidcService, TelegramAccountService],
+  controllers: [BotAuthController, BotSecurityController],
+  providers: [SessionService, TelegramAccountService, TelegramBotLoginService, OtpService, { provide: EmailService, useValue: new EmailService() }],
+  exports: [SessionService, TelegramAccountService],
 })
 export class AuthModule {}

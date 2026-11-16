@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID, timingSafeEqual as nodeTimingSafeEqual } from 'node:crypto';
-import { prisma, generateOpaqueToken, hmacToken, timingSafeEqual } from '@clipforge/database';
+import { prisma, type Prisma, generateOpaqueToken, hmacToken, timingSafeEqual } from '@clipforge/database';
 import type { Request } from 'express';
 
 export interface AuthenticatedSession {
@@ -34,6 +34,7 @@ export class SessionService {
   async create(
     userId: string,
     request: Request,
+    db: Prisma.TransactionClient | typeof prisma = prisma,
   ): Promise<{ sessionId: string; rawToken: string; csrfToken: string; expiresAt: Date }> {
     const rawToken = generateOpaqueToken(32);
     // The CSRF token is *derived* from the session id rather than random-per-fetch. Two tabs (or a
@@ -43,7 +44,7 @@ export class SessionService {
     const sessionId = randomUUID();
     const csrfToken = this.csrfTokenFor(sessionId);
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    const row = await prisma.session.create({
+    const row = await db.session.create({
       data: {
         id: sessionId,
         userId,
@@ -67,14 +68,15 @@ export class SessionService {
   async issue(
     userId: string,
     request: Request,
+    db: Prisma.TransactionClient | typeof prisma = prisma,
   ): Promise<{ rawToken: string; csrfToken: string; workspaceId: string; userId: string } | null> {
-    const membership = await prisma.workspaceMember.findFirst({
-      where: { userId },
+    const membership = await db.workspaceMember.findFirst({
+      where: { userId, workspace: { deletedAt: null } },
       include: { workspace: true },
       orderBy: { createdAt: 'asc' },
     });
     if (!membership) return null;
-    const { rawToken, csrfToken } = await this.create(userId, request);
+    const { rawToken, csrfToken } = await this.create(userId, request, db);
     return { rawToken, csrfToken, workspaceId: membership.workspaceId, userId };
   }
 
@@ -85,7 +87,7 @@ export class SessionService {
       include: {
         user: {
           include: {
-            memberships: { include: { workspace: true }, orderBy: { createdAt: 'asc' }, take: 1 },
+            memberships: { where: { workspace: { deletedAt: null } }, include: { workspace: true }, orderBy: { createdAt: 'asc' }, take: 1 },
           },
         },
       },
@@ -179,7 +181,7 @@ export class SessionService {
   }
 
   async revoke(sessionId: string): Promise<void> {
-    await prisma.session.update({ where: { id: sessionId }, data: { revokedAt: new Date() } }).catch(() => undefined);
+    await prisma.session.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
     this.csrfCache.delete(sessionId);
   }
 

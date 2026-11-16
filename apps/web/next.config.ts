@@ -108,8 +108,7 @@ if (problem) {
  *    scripts without a nonce. Moving to a nonce (middleware-generated) would remove it and is the
  *    documented follow-up; until then the policy still blocks every *external* script origin, eval,
  *    framing, base-uri hijacking and form hijacking.
- *  - Firebase/Google entries exist because "Continue with Google" loads the Firebase auth iframe and
- *    calls identitytoolkit; without them the button would fail under the policy.
+ *  - No OAuth SDK or external auth iframe is allowed: sign-in uses Telegram bot deep links.
  *  - `media-src 'self' blob:` covers the clip player; `img-src … data: blob:` covers inline SVG and
  *    generated posters.
  */
@@ -131,13 +130,13 @@ const uploadConnectOrigins = (process.env.UPLOAD_CSP_ORIGINS ?? '')
 const csp = [
   "default-src 'self'",
   // dev needs eval for React Fast Refresh; production must not have it.
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''} https://apis.google.com https://www.gstatic.com`,
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://*.googleusercontent.com https://www.gstatic.com https://telesco.pe https://*.telesco.pe",
   "font-src 'self' data:",
   "media-src 'self' blob:",
-  `connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com https://*.r2.cloudflarestorage.com https://*.amazonaws.com ${uploadConnectOrigins.join(' ')}`.trim(),
-  "frame-src 'self' https://*.firebaseapp.com https://accounts.google.com",
+  `connect-src 'self' https://*.r2.cloudflarestorage.com https://*.amazonaws.com ${uploadConnectOrigins.join(' ')}`.trim(),
+  "frame-src 'none'",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

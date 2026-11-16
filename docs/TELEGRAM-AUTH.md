@@ -1,3 +1,5 @@
+> **Historical authentication reference:** active authentication is Telegram Bot-only; OIDC, passwords and email recovery are retired. See [telegram-bot-only-auth.md](telegram-bot-only-auth.md) before configuring or migrating any account.
+
 # Telegram sign-in and bot connection
 
 ClipForge has two separate Telegram features:

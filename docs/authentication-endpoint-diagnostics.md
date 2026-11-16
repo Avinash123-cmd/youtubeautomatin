@@ -1,3 +1,5 @@
+> **Historical document:** authentication is now Telegram Bot-only. Google, password, OIDC and email recovery routes are not registered. Do not follow legacy provider-enablement steps; see [telegram-bot-only-auth.md](telegram-bot-only-auth.md).
+
 # Authentication endpoint diagnostics and repairs — 2026-11-16
 
 ## Scope and diagnosis (do not confuse verified defects with hypotheses)

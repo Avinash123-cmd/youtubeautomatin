@@ -300,3 +300,7 @@ Whisper inference. Synthetic secrets in the test command must never be used for 
 - `tests/unit/telegram-linking.test.ts`
 - `tests/unit/web-auth-api.test.ts`
 - `tests/unit/web-processing-request.test.ts`
+
+## Telegram-only cutover supersedes prior auth-provider status
+
+See [telegram-bot-only-auth.md](telegram-bot-only-auth.md) for the current active module, migration, test evidence and A–F release gates. Legacy password/Firebase/OIDC/recovery controllers are no longer registered. This cutover is not declared production-ready: real-bot authentication and database migration/concurrency remain unverified.

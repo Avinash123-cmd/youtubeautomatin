@@ -26,7 +26,7 @@ import { env } from '../common/env';
 export const OTP_TELEGRAM_CLIENT = 'CLIPFORGE_OTP_TELEGRAM_CLIENT';
 
 export type OtpChannelName = 'EMAIL' | 'TELEGRAM';
-export type OtpPurposeName = 'LOGIN' | 'PASSWORD_RESET' | 'TELEGRAM_LINK';
+export type OtpPurposeName = 'LOGIN' | 'PASSWORD_RESET' | 'TELEGRAM_LINK' | 'SESSION_REVOCATION';
 
 export interface OtpChallengeView {
   challengeId: string;
@@ -189,7 +189,9 @@ export class OtpService {
   ): Promise<Omit<OtpDelivery, 'challengeId'> & { challengeId?: string }> {
     const minutes = Math.round(this.ttlSeconds / 60);
     const purposeText =
-      input.purpose === 'LOGIN'
+      input.purpose === 'SESSION_REVOCATION'
+        ? 'revoke all ClipForge sessions'
+        : input.purpose === 'LOGIN'
         ? 'sign in to ClipForge'
         : input.purpose === 'PASSWORD_RESET'
           ? 'reset your ClipForge password'
@@ -225,7 +227,7 @@ export class OtpService {
     }
     const result = await client.sendMessage(
       chatId,
-      `🔐 <b>ClipForge verification code</b>\n<code>${code}</code>\n\nUse it to ${purposeText}. Expires ${expiry} UTC (${minutes} min).\n<i>Not you? Change your password and revoke your sessions.</i>`,
+      `🔐 <b>ClipForge verification code</b>\n<code>${code}</code>\n\nUse it to ${purposeText}. Expires ${expiry} UTC (${minutes} min).\n<i>Not you? Do not share this code. Review your active sessions in ClipForge.</i>`,
     );
     return { channel: 'TELEGRAM', destination, delivered: result.delivered, error: result.error };
   }

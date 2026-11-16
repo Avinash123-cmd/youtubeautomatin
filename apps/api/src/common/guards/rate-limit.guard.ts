@@ -52,6 +52,13 @@ export class RateLimitGuard implements CanActivate {
       options.limit,
       options.windowSeconds,
     );
+    if (options.byIp && request.context?.userId) {
+      const ipBudget = await this.redis.hit(`${options.scope}:ip:${request.ip ?? 'unknown'}`, options.limit, options.windowSeconds);
+      if (!ipBudget.allowed) {
+        response.setHeader('retry-after', String(ipBudget.resetSeconds));
+        throw new HttpException({ code: 'RATE_LIMITED', message: 'Too many security requests from this address.' }, 429);
+      }
+    }
     response.setHeader('x-ratelimit-limit', String(options.limit));
     response.setHeader('x-ratelimit-remaining', String(remaining));
     response.setHeader('x-ratelimit-reset', String(resetSeconds));

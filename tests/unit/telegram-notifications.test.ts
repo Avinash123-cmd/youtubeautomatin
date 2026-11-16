@@ -292,10 +292,10 @@ describe('environment validation', () => {
     }
   });
 
-  it('requires the Telegram Login Client ID and Secret as a pair', () => {
+  it('does not let retired OIDC credentials block bot-only startup', () => {
     const cleanup = withEnv({ TELEGRAM_LOGIN_CLIENT_ID: '123456789', TELEGRAM_LOGIN_CLIENT_SECRET: undefined });
     try {
-      expect(() => loadEnv()).toThrow(/TELEGRAM_LOGIN_CLIENT_ID and TELEGRAM_LOGIN_CLIENT_SECRET together/);
+      expect(() => loadEnv()).not.toThrow();
     } finally {
       cleanup();
     }

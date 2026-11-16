@@ -51,18 +51,15 @@ describe('dashboard security headers', () => {
     expect(headers['Content-Security-Policy']).toContain("form-action 'self'");
   });
 
-  it('allows Firebase and the narrowly scoped storage hosts needed by direct uploads', async () => {
+  it('allows storage uploads but removes retired Firebase authentication hosts', async () => {
     const csp = (await headersFor('production'))['Content-Security-Policy'];
     const connect = csp.split(';').map((part) => part.trim()).find((part) => part.startsWith('connect-src'))!;
     // API traffic stays same-origin. Only known S3/R2 hosts are allowed for direct multipart PUTs.
     expect(connect).toContain("'self'");
     expect(connect.split(/\s+/)).not.toContain('*');
     expect(connect.split(/\s+/)).not.toContain('https:');
-    expect(connect).toContain('https://identitytoolkit.googleapis.com');
+    expect(connect).not.toContain('https://identitytoolkit.googleapis.com');
     expect(connect.split(/\s+/).filter((token) => token.includes('://'))).toEqual([
-      'https://identitytoolkit.googleapis.com',
-      'https://securetoken.googleapis.com',
-      'https://www.googleapis.com',
       'https://*.r2.cloudflarestorage.com',
       'https://*.amazonaws.com',
     ]);

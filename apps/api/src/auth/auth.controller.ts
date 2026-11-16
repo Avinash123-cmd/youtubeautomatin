@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Post, Query, Req, Res } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Inject, Post, Query, Req, Res } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -35,11 +35,11 @@ const TELEGRAM_OIDC_STATE_TTL_MS = 10 * 60_000;
 @Controller('api/auth')
 export class AuthController {
   constructor(
-    private readonly auth: AuthService,
-    private readonly sessions: SessionService,
-    private readonly firebase: FirebaseService,
-    private readonly telegramOidc: TelegramOidcService,
-    private readonly telegramAccount: TelegramAccountService,
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(SessionService) private readonly sessions: SessionService,
+    @Inject(FirebaseService) private readonly firebase: FirebaseService,
+    @Inject(TelegramOidcService) private readonly telegramOidc: TelegramOidcService,
+    @Inject(TelegramAccountService) private readonly telegramAccount: TelegramAccountService,
   ) {}
 
   private setSessionCookies(res: Response, rawToken: string): void {

@@ -37,3 +37,14 @@ describe('browser authentication API client', () => {
     expect(fetchMock.mock.calls[2][1].headers['x-csrf-token']).toBe('fresh-anonymous-token');
   });
 });
+
+it('invalidates a rejected CSRF token without replaying a state-changing request', async () => {
+  setCsrfToken('expired-anonymous-token');
+  fetchMock.mockResolvedValueOnce(json({ error: { code: 'CSRF_FAILED' } }, 403));
+  await expect(api('/api/auth/login', { method: 'POST' })).rejects.toMatchObject({ code: 'CSRF_FAILED' });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  fetchMock.mockResolvedValueOnce(json({ csrfToken: 'fresh-token' })).mockResolvedValueOnce(json({ ok: true }));
+  await api('/api/auth/login', { method: 'POST' });
+  expect(fetchMock.mock.calls[1]).toEqual(['/api/auth/csrf', { credentials: 'include', cache: 'no-store' }]);
+  expect(fetchMock.mock.calls[2][1].headers['x-csrf-token']).toBe('fresh-token');
+});

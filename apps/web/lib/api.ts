@@ -30,7 +30,7 @@ export function isBackendUnreachable(error: unknown): boolean {
 async function fetchAnonymousCsrf(): Promise<string> {
   let response: Response;
   try {
-    response = await fetch('/api/auth/csrf', { credentials: 'include' });
+    response = await fetch('/api/auth/csrf', { credentials: 'include', cache: 'no-store' });
   } catch (cause) {
     throw unreachable((cause as Error)?.message ?? 'The network request failed.');
   }
@@ -83,7 +83,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     if (!error && response.status >= 500) {
       throw unreachable(`The API origin did not answer; the proxy returned HTTP ${response.status}.`, response.status);
     }
-    if (response.status === 401) setCsrfToken(null);
+    if (response.status === 401 || (response.status === 403 && error?.code === 'CSRF_FAILED')) setCsrfToken(null);
     throw new ApiError(
       error?.message ?? `Request failed with HTTP ${response.status}`,
       response.status,

@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx watch src/main.ts",
+    "dev": "node ../../scripts/dev-api.cjs",
     "start": "node dist/main.js",
     "worker:ai": "tsx src/workers/pipeline.worker.ts",
     "worker:render": "tsx src/workers/render.worker.ts",

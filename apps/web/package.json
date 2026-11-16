@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start -p 3000 -H 0.0.0.0",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "predev": "npm run build -w @clipforge/validation",
+    "prebuild": "npm run build -w @clipforge/validation",
+    "pretypecheck": "npm run build -w @clipforge/validation"
   },
   "dependencies": {
     "@tanstack/react-query": "5.62.7",

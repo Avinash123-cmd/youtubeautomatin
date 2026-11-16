@@ -10,7 +10,7 @@ export class RequestIdInterceptor implements NestInterceptor {
     const http = context.switchToHttp();
     const request = http.getRequest<Request & { requestId?: string }>();
     const response = http.getResponse<Response>();
-    const requestId = request.get('x-request-id') ?? randomUUID();
+    const requestId = request.requestId ?? randomUUID();
     request.requestId = requestId;
     response.setHeader('x-request-id', requestId);
     const started = Date.now();

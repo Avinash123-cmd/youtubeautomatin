@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import './load-env';
+import { authHttpMetadata } from './common/auth-http.middleware';
 import { corsOptions } from './common/origin-policy';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -19,6 +20,8 @@ async function bootstrap() {
   const logger = new AppLogger('bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger });
 
+  app.disable('etag'); // Session/CSRF responses must never become conditional 304s.
+  app.use(authHttpMetadata);
   app.use(cookieParser());
   // Helmet configuration lives in common/security-headers.ts so a unit test can assert it.
   const isProduction = env.NODE_ENV === 'production';

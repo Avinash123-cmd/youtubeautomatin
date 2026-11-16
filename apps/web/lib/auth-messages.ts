@@ -4,7 +4,7 @@ import { ApiError } from './api';
  * Users should read what to do, not what threw. Every branch below is a state this deployment can
  * actually reach — the codes come from the API and the proxy, not from imagination.
  */
-export function describeAuthError(error: unknown): { title: string; message: string; hint?: string } {
+function authErrorDescription(error: unknown): { title: string; message: string; hint?: string } {
   if (error instanceof ApiError) {
     switch (error.code) {
       case 'UNAUTHENTICATED':
@@ -21,12 +21,16 @@ export function describeAuthError(error: unknown): { title: string; message: str
           message: 'This API has no Firebase service account, so it cannot verify Google accounts.',
           hint: 'Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY, then restart the API. See docs/FIREBASE-AUTH.md.',
         };
-      case 'CSRF_FAILED':
+      case 'ORIGIN_FORBIDDEN':
         return {
           title: 'Request blocked by origin check',
           message: 'The API rejected this page’s origin, so nothing was saved.',
           hint: 'Set APP_URL and ALLOWED_ORIGINS on the API to this exact origin (scheme + host, no trailing slash).',
         };
+      case 'CSRF_FAILED':
+        return { title: 'Security token rejected', message: error.message, hint: 'Retry to obtain a fresh token. If this persists, check that cookies are enabled and you consistently use localhost or 127.0.0.1, not both.' };
+      case 'INTERNAL_ERROR':
+        return { title: 'Authentication API error', message: error.message, hint: 'The backend failed. Match the request ID with the API server logs; do not change credentials or disable security checks.' };
       case 'CONFLICT':
         return { title: 'Already exists', message: error.message };
       case 'BACKEND_UNREACHABLE':
@@ -55,4 +59,12 @@ export function validateCredentials(email: string, password: string, mode: 'logi
     errors.password = 'Enter your password.';
   }
   return errors;
+}
+
+/** Preserve backend correlation IDs in every auth surface using this formatter. */
+export function describeAuthError(error: unknown): { title: string; message: string; hint?: string } {
+  const result = authErrorDescription(error);
+  return error instanceof ApiError && error.requestId
+    ? { ...result, message: `${result.message} (Request ID: ${error.requestId})` }
+    : result;
 }

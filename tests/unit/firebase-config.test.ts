@@ -135,4 +135,15 @@ describe('Firebase configuration', () => {
       response: expect.objectContaining({ code: 'FIREBASE_NOT_CONFIGURED' }),
     });
   });
+  it.each(['null', '[]', '{"project_id":{},"client_email":2,"private_key":false}', '{invalid'])('disables malformed JSON credentials without crashing discovery: %s', async value => {
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON = value;
+    await loadModules();
+    const { FirebaseService } = await import('../../apps/api/src/auth/firebase.service');
+    const service = new FirebaseService();
+    expect(service.configured).toBe(false);
+    expect(service.webConfig()).toBeNull();
+    expect(service.fullyConfigured).toBe(false);
+    expect(service.missing).toContain('FIREBASE_SERVICE_ACCOUNT_JSON');
+  });
+
 });

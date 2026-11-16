@@ -49,3 +49,7 @@ Rules for this directory:
    structure check greps for `docs/` mentions and fails on the ones that do not exist.
 4. **Dates are absolute** (`2026-11-09`, not "last week"), because documents outlive the person who
    wrote them.
+
+## Login contract regression report
+
+- [Telegram login crash and API contract fix](login-contract-fix.md) — causes, response contracts, verification and remaining live-service gates.

@@ -327,3 +327,36 @@ export const notificationTestSchema = z.object({
 export type NotificationSettingsInput = z.infer<typeof notificationSettingsSchema>;
 
 export * from './domain';
+
+// Telegram-only auth response contracts. Optional diagnostics are normalized, never cast blindly.
+export const botProvidersResponseSchema = z.object({
+  password: z.literal(false).optional(),
+  selfRegistrationEnabled: z.literal(false).optional(),
+  providers: z.array(z.literal('TELEGRAM_BOT')).optional(),
+  contractVersion: z.literal('telegram-bot-v1').optional(),
+  telegram: z.object({
+    enabled: z.boolean(),
+    configured: z.boolean().optional(),
+    missing: z.array(z.string().min(1)).default([]),
+  }).refine(value => !(value.enabled && value.configured === false), 'An unconfigured provider cannot be enabled'),
+});
+const botChallengeExpiry = z.string().datetime({ offset: true });
+const botDisplayIdentity = z.object({ displayName: z.string().min(1), username: z.string().nullable() });
+export const botLoginStatusResponseSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('IDLE') }),
+  z.object({ state: z.literal('EXPIRED') }),
+  z.object({ state: z.literal('WAITING_FOR_TELEGRAM'), expiresAt: botChallengeExpiry, identity: z.null().optional() }),
+  z.object({ state: z.literal('VERIFYING'), expiresAt: botChallengeExpiry, identity: botDisplayIdentity }),
+]);
+export const botChallengeResponseSchema = z.object({
+  deepLink: z.string().url().refine(value => {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 't.me' && !url.username && !url.password && !url.port && !url.hash
+      && /^\/[A-Za-z0-9_]{5,32}$/.test(url.pathname) && /^login_[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('start') ?? '')
+      && [...url.searchParams.keys()].length === 1;
+  }, 'Expected a Telegram bot login deep link'),
+  expiresAt: botChallengeExpiry,
+});
+export const botLoginCompleteResponseSchema = z.object({ authenticated: z.literal(true), csrfToken: z.string().min(1) });
+export type BotProvidersResponse = z.infer<typeof botProvidersResponseSchema>;
+export type BotLoginStatusResponse = z.infer<typeof botLoginStatusResponseSchema>;

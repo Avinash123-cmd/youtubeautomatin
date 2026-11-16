@@ -61,3 +61,12 @@ it('retains provider request IDs from the response header when absent from the e
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' } }), { status: 500, headers: { 'content-type': 'application/json', 'x-request-id': 'provider-trace' } }));
   await expect(api('/api/auth/providers')).rejects.toMatchObject({ requestId: 'provider-trace' });
 });
+
+it('rejects null CSRF JSON with an actionable error instead of dereferencing it', async () => {
+  fetchMock.mockResolvedValueOnce(json(null));
+  await expect(api('/api/auth/telegram/challenge', { method: 'POST' })).rejects.toMatchObject({ code: 'CSRF_FAILED', status: 502, message: 'Invalid CSRF response from API' });
+});
+it('handles null error bodies without a TypeError', async () => {
+  fetchMock.mockResolvedValueOnce(json(null, 404));
+  await expect(api('/api/auth/telegram/status')).rejects.toMatchObject({ code: 'REQUEST_FAILED', status: 404 });
+});

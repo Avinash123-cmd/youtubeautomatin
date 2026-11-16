@@ -40,7 +40,7 @@ async function fetchAnonymousCsrf(): Promise<string> {
     throw new ApiError(payload?.error?.message ?? 'Unable to obtain a CSRF token', response.status, payload?.error?.code ?? 'CSRF_FAILED', undefined, undefined, payload?.error?.requestId ?? response.headers.get('x-request-id') ?? undefined);
   }
   const body = (await response.json()) as { csrfToken: string };
-  if (typeof body.csrfToken !== 'string' || !body.csrfToken) throw new ApiError('Invalid CSRF response from API', 502, 'CSRF_FAILED');
+  if (!body || typeof body !== 'object' || typeof body.csrfToken !== 'string' || !body.csrfToken) throw new ApiError('Invalid CSRF response from API', 502, 'CSRF_FAILED');
   return body.csrfToken;
 }
 
@@ -79,7 +79,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   const text = await response.text();
   const payload = text ? safeJson(text) : {};
   if (!response.ok) {
-    const error = (payload as { error?: { code?: string; message?: string; missingConfiguration?: string[]; details?: unknown; requestId?: string } }).error;
+    const error = payload !== null && typeof payload === 'object' ? (payload as { error?: { code?: string; message?: string; missingConfiguration?: string[]; details?: unknown; requestId?: string } }).error : undefined;
     // A 5xx with no `error` envelope did not come from the API — a rewrite/proxy produced it
     // (Next answers 500 on ECONNREFUSED, Vercel answers 502/504). Say "unreachable", not "failed".
     if (!error && response.status >= 500) {

@@ -29,6 +29,11 @@ function authErrorDescription(error: unknown): { title: string; message: string;
         };
       case 'CSRF_FAILED':
         return { title: 'Security token rejected', message: error.message, hint: 'Retry to obtain a fresh token. If this persists, check that cookies are enabled and you consistently use localhost or 127.0.0.1, not both.' };
+      case 'AUTH_CONTRACT_MISMATCH':
+      case 'AUTH_ROUTE_MISSING':
+        return { title: 'Authentication API version mismatch', message: error.message };
+      case 'SESSION_NOT_RESTORED':
+        return { title: 'Session could not be restored', message: error.message };
       case 'INTERNAL_ERROR':
         return { title: 'Authentication API error', message: error.message, hint: 'The backend failed. Match the request ID with the API server logs; do not change credentials or disable security checks.' };
       case 'CONFLICT':

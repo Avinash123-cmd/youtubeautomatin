@@ -3,29 +3,43 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
-import { api, setCsrfToken } from '@/lib/api';
+import { setCsrfToken } from '@/lib/api';
 import { describeAuthError } from '@/lib/auth-messages';
-import { botLoginView, shouldPollBotLogin, type BotLoginStatus } from '../../lib/bot-login-state';
+import { botLoginView, shouldPollBotLogin, botLoginPhase } from '../../lib/bot-login-state';
+import { botProvidersResponseSchema, botLoginStatusResponseSchema } from '@clipforge/validation';
+import { loadBotProviders, loadBotStatus, createBotChallenge, completeBotLogin } from '@/lib/bot-auth-api';
+import { ApiError } from '@/lib/api';
 import { useSession } from '@/lib/hooks';
 
-
-type Providers = { telegram: { enabled: boolean; missing: string[] } };
 
 export default function LoginPage() {
   const router = useRouter();
   const session = useSession();
   const [deepLink, setDeepLink] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
-  const providers = useQuery({ queryKey: ['bot-provider'], queryFn: () => api<Providers>('/api/auth/providers'), retry: 1 });
-  const status = useQuery({ queryKey: ['bot-login-status'], queryFn: () => api<BotLoginStatus>('/api/auth/telegram/status'), retry: 1, refetchInterval: query => shouldPollBotLogin(query.state.data, Date.now(), Boolean(query.state.error), session.data?.authenticated === true) ? 2500 : false });
-  const create = useMutation({ mutationFn: () => api<{ deepLink: string; expiresAt: string }>('/api/auth/telegram/challenge', { method: 'POST' }), onSuccess: async data => { setDeepLink(data.deepLink); await status.refetch(); } });
-  const complete = useMutation({ mutationFn: () => api<{ authenticated: boolean; csrfToken: string }>('/api/auth/telegram/complete', { method: 'POST' }), onSuccess: async data => { setCsrfToken(data.csrfToken); await session.refetch(); router.replace('/'); } });
+  const providers = useQuery({ queryKey: ['bot-provider'], queryFn: ({ signal }) => loadBotProviders(signal), retry: false });
+  // Also validate cached/hydrated data: a stale cache must not crash before refetch completes.
+  const parsedProviders = botProvidersResponseSchema.safeParse(providers.data);
+  const provider = parsedProviders.success ? parsedProviders.data.telegram : undefined;
+  const status = useQuery({ queryKey: ['bot-login-status'], queryFn: ({ signal }) => loadBotStatus(signal), enabled: Boolean(provider?.enabled) && !session.isPending && !session.data?.authenticated && !providers.error, retry: false, refetchOnWindowFocus: false, refetchInterval: query => shouldPollBotLogin(query.state.data, Date.now(), Boolean(query.state.error), session.data?.authenticated === true) ? 2500 : false });
+  const parsedStatus = botLoginStatusResponseSchema.safeParse(status.data);
+  const loginStatus = parsedStatus.success ? parsedStatus.data : undefined;
+  const create = useMutation({ mutationFn: createBotChallenge, onSuccess: async data => { setDeepLink(data.deepLink); await status.refetch(); } });
+  const complete = useMutation({ mutationFn: completeBotLogin, onSuccess: async data => { setCsrfToken(data.csrfToken); const restored = await session.refetch(); if (restored.error) throw restored.error; if (!restored.data?.authenticated) throw new ApiError('The API did not restore the new session. Check browser cookies and the API proxy.', 502, 'SESSION_NOT_RESTORED'); router.replace('/'); } });
 
   useEffect(() => { if (session.data?.authenticated) router.replace('/'); }, [session.data?.authenticated, router]);
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
-  const { remaining, expired, waiting } = botLoginView(status.data, now);
-  const error = create.error ?? complete.error ?? status.error ?? providers.error ?? session.error;
+  const clockExpiry = loginStatus && 'expiresAt' in loginStatus ? loginStatus.expiresAt : undefined;
+  useEffect(() => {
+    if (!clockExpiry || session.data?.authenticated) return;
+    const deadline = Date.parse(clockExpiry);
+    const timer = setInterval(() => { const tick = Date.now(); setNow(tick); if (tick >= deadline) clearInterval(timer); }, 1000);
+    return () => clearInterval(timer);
+  }, [clockExpiry, session.data?.authenticated]);
+  const { remaining, expired, waiting } = botLoginView(loginStatus, now);
+  const cacheError = (providers.data !== undefined && !parsedProviders.success) || (status.data !== undefined && !parsedStatus.success) ? new ApiError('The cached authentication response is incompatible. Retry to reload it from the updated backend.', 502, 'AUTH_CONTRACT_MISMATCH') : null;
+  const error = create.error ?? complete.error ?? status.error ?? providers.error ?? session.error ?? cacheError;
   const failure = error ? describeAuthError(error) : null;
+  const phase = botLoginPhase({ status: loginStatus, creating: create.isPending, completing: complete.isPending, authenticated: session.data?.authenticated === true, failed: Boolean(error) }, now);
 
   return (
     <main className="relative flex min-h-[100dvh] overflow-hidden bg-[#090e24] text-white">
@@ -44,21 +58,21 @@ export default function LoginPage() {
           </div>
         </section>
 
-        <section aria-labelledby="login-title" className="min-w-0 rounded-3xl bg-white p-6 text-slate-900 shadow-2xl sm:p-10">
+        <section data-auth-state={phase} aria-labelledby="login-title" className="min-w-0 rounded-3xl bg-white p-6 text-slate-900 shadow-2xl sm:p-10">
           <div className="mb-6 inline-flex rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">One account. Secured by Telegram.</div>
           <h2 id="login-title" className="text-3xl font-semibold tracking-tight">Welcome back.</h2>
           <p className="mt-3 text-sm leading-relaxed text-slate-500">Securely sign in using your Telegram account.</p>
 
-          {providers.isPending || status.isPending || session.isPending ? <p role="status" className="mt-6 text-sm text-slate-500">Checking authentication…</p> : null}
+          {providers.isPending || status.isLoading || session.isPending ? <p role="status" className="mt-6 text-sm text-slate-500">Checking authentication…</p> : null}
           {failure ? <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><p className="font-semibold">{failure.title}</p><p className="mt-1 break-words">{failure.message}</p><button type="button" className="mt-3 underline" onClick={() => { create.reset(); complete.reset(); void status.refetch(); void providers.refetch(); void session.refetch(); }}>Retry connection</button></div> : null}
-          {providers.data && !providers.data.telegram.enabled ? <p role="alert" className="mt-5 rounded-xl bg-amber-50 p-4 text-sm text-amber-900">Telegram sign-in is not configured. Ask the operator to configure {providers.data.telegram.missing.join(', ')}.</p> : null}
+          {provider && !provider.enabled ? <p role="alert" className="mt-5 rounded-xl bg-amber-50 p-4 text-sm text-amber-900">Telegram sign-in is unavailable. {provider.missing.length ? `Ask the operator to configure ${provider.missing.join(', ')}.` : 'The API did not supply configuration details. Ask the operator to check the Telegram bot configuration.'}</p> : null}
 
-          {!waiting ? <button type="button" disabled={!providers.data?.telegram.enabled || create.isPending || session.isPending || status.isPending} onClick={() => { complete.reset(); create.mutate(); }} className="mt-7 flex min-h-12 w-full items-center justify-center rounded-xl bg-[#229ED9] px-4 py-3 font-semibold text-white transition hover:bg-[#168ac0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-600 disabled:cursor-not-allowed disabled:opacity-50">{create.isPending ? 'Creating secure login…' : expired ? 'Generate a new login link' : 'Continue with Telegram'}</button> : null}
+          {!waiting ? <button type="button" disabled={!provider?.enabled || Boolean(providers.error) || Boolean(session.error) || Boolean(status.error) || Boolean(cacheError) || create.isPending || session.isPending || status.isLoading} onClick={() => { complete.reset(); create.mutate(); }} className="mt-7 flex min-h-12 w-full items-center justify-center rounded-xl bg-[#229ED9] px-4 py-3 font-semibold text-white transition hover:bg-[#168ac0] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-600 disabled:cursor-not-allowed disabled:opacity-50">{create.isPending ? 'Creating secure login…' : expired ? 'Generate a new login link' : 'Continue with Telegram'}</button> : null}
           {waiting ? <div className="mt-6 space-y-4">
             {deepLink ? <a href={deepLink} target="_blank" rel="noopener noreferrer" className="flex min-h-12 items-center justify-center rounded-xl bg-[#229ED9] px-4 py-3 font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-600">Open Telegram ↗</a> : <p className="text-sm text-slate-500">Your login is still pending. Return to the Telegram window you opened, or generate a new link below.</p>}
-            <p role="status" aria-live="polite" className="text-center text-sm text-slate-600">{status.data?.state === 'VERIFYING' ? 'Telegram confirmed. Check the account below.' : 'Waiting for you to press Start in Telegram…'}</p>
+            <p role="status" aria-live="polite" className="text-center text-sm text-slate-600">{loginStatus?.state === 'VERIFYING' ? 'Telegram confirmed. Check the account below.' : 'Waiting for you to press Start in Telegram…'}</p>
             <p className="text-center font-mono text-sm text-slate-400">Expires in {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}</p>
-            {status.data?.state === 'VERIFYING' ? <div className="rounded-xl bg-purple-50 p-4 text-sm text-purple-950"><p>Sign in as <strong>{status.data.identity?.displayName}</strong>{status.data.identity?.username ? ` (@${status.data.identity.username})` : ''}?</p><p className="mt-1 text-xs">Only continue if this is your Telegram account.</p><button type="button" disabled={complete.isPending} onClick={() => complete.mutate()} className="mt-3 min-h-11 w-full rounded-lg bg-purple-700 px-4 py-2 font-semibold text-white disabled:opacity-50">{complete.isPending ? 'Signing in…' : 'Confirm and sign in'}</button></div> : null}
+            {loginStatus?.state === 'VERIFYING' ? <div className="rounded-xl bg-purple-50 p-4 text-sm text-purple-950"><p>Sign in as <strong>{loginStatus.identity?.displayName}</strong>{loginStatus.identity?.username ? ` (@${loginStatus.identity.username})` : ''}?</p><p className="mt-1 text-xs">Only continue if this is your Telegram account.</p><button type="button" disabled={complete.isPending || create.isPending || Boolean(status.error) || Boolean(cacheError)} onClick={() => complete.mutate()} className="mt-3 min-h-11 w-full rounded-lg bg-purple-700 px-4 py-2 font-semibold text-white disabled:opacity-50">{complete.isPending ? 'Signing in…' : 'Confirm and sign in'}</button></div> : null}
             <button type="button" disabled={create.isPending || complete.isPending} onClick={() => { complete.reset(); create.mutate(); }} className="min-h-11 w-full text-sm font-medium text-purple-700 underline">{create.isPending ? 'Regenerating…' : 'Generate a new link'}</button>
           </div> : null}
           {expired ? <p role="status" className="mt-4 text-sm text-amber-700">This login link expired. Generate a new one to continue.</p> : null}

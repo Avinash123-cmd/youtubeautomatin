@@ -1,7 +1,8 @@
-import { Body, Controller, ForbiddenException, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, HttpCode, Inject, InternalServerErrorException, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { appendAuditLog, timingSafeEqual } from '@clipforge/database';
 import { z } from 'zod';
+import { botProvidersResponseSchema, botLoginStatusResponseSchema } from '@clipforge/validation';
 import { CurrentContext, Public, SkipCsrf } from '../common/decorators/auth.decorators';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
 import type { RequestContext } from '../common/guards/session-auth.guard';
@@ -10,6 +11,12 @@ import { describeBotSession } from './bot-session-description';
 import { SessionService } from './session.service';
 import { TelegramAccountService } from './telegram-account.service';
 import { botConfiguration, TelegramBotLoginService } from './telegram-bot-login.service';
+
+/** Response failures are server errors, not client Zod input-validation failures. */
+function authResponse<T>(result: { success: true; data: T } | { success: false }): T {
+  if (!result.success) throw new InternalServerErrorException({ code: 'AUTH_CONTRACT_ERROR', message: 'Authentication response validation failed. Report the request ID to the operator.' });
+  return result.data;
+}
 
 const BROWSER_COOKIE = 'cf_bot_login';
 const cookie = () => ({ httpOnly: true, secure: env.NODE_ENV === 'production', sameSite: 'lax' as const, path: '/api/auth/telegram' });
@@ -31,7 +38,7 @@ export class BotAuthController {
   ) {}
 
   @Get('providers') @Public() @SkipCsrf()
-  providers() { const config = botConfiguration(); return { password: false, selfRegistrationEnabled: false, telegram: { enabled: config.configured, ...config }, providers: ['TELEGRAM_BOT'] }; }
+  providers() { const config = botConfiguration(); return authResponse(botProvidersResponseSchema.safeParse({ contractVersion: 'telegram-bot-v1', password: false, selfRegistrationEnabled: false, telegram: { enabled: config.configured, ...config }, providers: ['TELEGRAM_BOT'] })); }
 
   @Get('csrf') @Public() @SkipCsrf()
   csrf(@Res({ passthrough: true }) res: Response) {
@@ -51,7 +58,7 @@ export class BotAuthController {
 
   @Get('telegram/status') @Public()
   @RateLimit({ limit: 180, windowSeconds: 300, scope: 'bot-login-status' })
-  status(@Req() req: Request) { return this.login.status(req.cookies?.[BROWSER_COOKIE]); }
+  async status(@Req() req: Request) { return authResponse(botLoginStatusResponseSchema.safeParse(await this.login.status(req.cookies?.[BROWSER_COOKIE]))); }
 
   @Post('telegram/complete') @Public() @HttpCode(200)
   @RateLimit({ limit: 10, windowSeconds: 300, scope: 'bot-login-complete' })

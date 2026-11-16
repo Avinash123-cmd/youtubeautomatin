@@ -20,7 +20,7 @@ vi.mock('../../apps/api/src/common/env', () => ({ env }));
 const approve = vi.fn();
 const create = vi.fn().mockResolvedValue({ browser: 'b'.repeat(43), deepLink: `https://t.me/ClipForgeBot?start=login_${'t'.repeat(43)}`, expiresAt: new Date(Date.now() + 300000).toISOString() });
 const accounts = { handleUpdate: vi.fn() };
-@Module({ controllers: [BotAuthController], providers: [SessionService, { provide: TelegramBotLoginService, useValue: { approve, create } }, { provide: TelegramAccountService, useValue: accounts }] })
+@Module({ controllers: [BotAuthController], providers: [SessionService, { provide: TelegramBotLoginService, useValue: { approve, create, status: (verifier?: string) => new TelegramBotLoginService(new SessionService()).status(verifier) } }, { provide: TelegramAccountService, useValue: accounts }] })
 class HttpModule {}
 let app: INestApplication;
 beforeAll(async () => {
@@ -47,6 +47,11 @@ describe('active bot-only HTTP boundary (isolated providers, not live Telegram)'
     expect(new SessionService().verifyAnonymousCsrf(cookie, csrf.body.csrfToken)).toBe(true);
     expect(csrf.headers['set-cookie'][0]).toContain('HttpOnly');
     expect(csrf.headers['set-cookie'][0]).toContain('SameSite=Lax');
+  });
+  it('serves the existing public Telegram status route with the real idle service path', async () => {
+    const result = await request(app.getHttpServer()).get('/api/auth/telegram/status').expect(200);
+    expect(result.body).toEqual({ state: 'IDLE' });
+    expect(result.headers['cache-control']).toBe('no-store');
   });
   it('sets the browser binding only as an HttpOnly cookie on CSRF-protected challenge creation', async () => {
     const csrf = await request(app.getHttpServer()).get('/api/auth/csrf').expect(200);
@@ -97,6 +102,10 @@ describe('active bot-only HTTP boundary (isolated providers, not live Telegram)'
   it.runIf(Boolean(process.env.BOT_PROXY_TEST))('uses the actual Next rewrite for discovery, cookies, CSRF and webhook rejection', async () => {
     const providers = await fetch('http://localhost:3000/api/auth/providers');
     expect(providers.status).toBe(200);
+    const status = await fetch('http://localhost:3000/api/auth/telegram/status');
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual({ state: 'IDLE' });
+
     expect(await providers.json()).toMatchObject({ providers: ['TELEGRAM_BOT'], password: false });
     const csrf = await fetch('http://localhost:3000/api/auth/csrf');
     expect(csrf.status).toBe(200);

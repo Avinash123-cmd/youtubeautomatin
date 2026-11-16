@@ -4,6 +4,7 @@
  * operator sees the complete list instead of one-at-a-time errors.
  */
 import { z } from 'zod';
+import { isTelegramWebhookUrl } from './telegram-webhook-url';
 
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
 
@@ -30,7 +31,7 @@ export const envSchema = z.object({
 
   CREDENTIAL_ENCRYPTION_KEY: z.string().min(1),
   SESSION_SECRET: z.string().min(32),
-  ADMIN_BOOTSTRAP_TOKEN: z.string().min(32),
+  ADMIN_BOOTSTRAP_TOKEN: z.string().optional(),
   // Self-service signup is opt-in. A platform that hosts a single organisation must not expose
   // an endpoint that lets anyone on the internet mint a workspace, so the default is 'false'.
   ALLOW_SELF_REGISTRATION: bool.default('false'),
@@ -85,6 +86,9 @@ export const envSchema = z.object({
     z.string().url().optional(),
   ),
   TELEGRAM_LOGIN_ALLOW_NEW_USERS: bool.default('false'),
+  TELEGRAM_BOT_ID: z.preprocess(value => typeof value === 'string' && !value.trim() ? undefined : value, z.string().trim().regex(/^[1-9]\d*$/).optional()),
+  TELEGRAM_WEBHOOK_URL: z.preprocess(value => typeof value === 'string' && !value.trim() ? undefined : value, z.string().url().optional()),
+  TELEGRAM_LOGIN_CHALLENGE_TTL_SECONDS: z.coerce.number().int().min(60).max(600).default(300),
 
   // ------------------------- Telegram notifications -------------------------
   // Optional: absent values disable outbound notifications without touching any other feature. The
@@ -136,10 +140,10 @@ export const envSchema = z.object({
 
   /** One-time-code policy. TTL in seconds, resend cooldown, and wrong-attempt budget. */
   OTP_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(300),
-  OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).max(600).default(60),
+  OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(1).max(600).default(60),
   OTP_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
   /** Optional dedicated secret for code hashing; falls back to SESSION_SECRET. */
-  OTP_SECRET: z.string().optional(),
+  OTP_SECRET: z.preprocess(value => typeof value === 'string' && !value.trim() ? undefined : value, z.string().min(32).optional()),
 
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_TEXT_MODEL: z.string().optional(),
@@ -193,31 +197,16 @@ export function loadEnv(): AppEnv {
   }
   // The public web config needs only FIREBASE_PROJECT_ID, so a project id on its own is a legitimate
   // (browser-configured, verifier-missing) deployment. The credential pair must not be split.
-  const hasClientEmail = Boolean(env.FIREBASE_CLIENT_EMAIL);
-  const hasPrivateKey = Boolean(env.FIREBASE_PRIVATE_KEY);
-  if (!env.FIREBASE_SERVICE_ACCOUNT_JSON && hasClientEmail !== hasPrivateKey) {
-    throw new Error(
-      'Firebase Auth is half-configured: FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY must be set together ' +
-        '(or provide the whole thing as FIREBASE_SERVICE_ACCOUNT_JSON, or neither for password-only login).',
-    );
+  // Legacy OAuth settings are no longer consulted by the active authentication module.
+  if (env.NODE_ENV === 'production' && new URL(env.APP_URL).protocol !== 'https:') throw new Error('Telegram-only authentication requires HTTPS APP_URL in production.');
+  if (env.NODE_ENV === 'production' && (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_BOT_USERNAME || !env.TELEGRAM_WEBHOOK_SECRET)) {
+    throw new Error('Telegram-only authentication requires TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME and TELEGRAM_WEBHOOK_SECRET in production.');
   }
-  if (hasClientEmail && hasPrivateKey && !env.FIREBASE_PROJECT_ID) {
-    throw new Error('Firebase Auth has credentials but no FIREBASE_PROJECT_ID — add the project id (Firebase console → Project settings).');
+  if (env.TELEGRAM_WEBHOOK_URL && !isTelegramWebhookUrl(env.TELEGRAM_WEBHOOK_URL)) {
+    throw new Error('TELEGRAM_WEBHOOK_URL must be a public HTTPS hostname ending /api/auth/telegram/webhook, not localhost, an IP literal or a private hostname. Use an HTTPS tunnel for local development.');
   }
-  if (Boolean(env.TELEGRAM_LOGIN_CLIENT_ID) !== Boolean(env.TELEGRAM_LOGIN_CLIENT_SECRET)) {
-    throw new Error('Telegram Login OIDC requires TELEGRAM_LOGIN_CLIENT_ID and TELEGRAM_LOGIN_CLIENT_SECRET together.');
-  }
-  if (env.TELEGRAM_LOGIN_CLIENT_ID && !/^\d+$/.test(env.TELEGRAM_LOGIN_CLIENT_ID)) {
-    throw new Error('TELEGRAM_LOGIN_CLIENT_ID must be the numeric Client ID from BotFather (not the Bot API token).');
-  }
-  if (env.TELEGRAM_LOGIN_REDIRECT_URI) {
-    const callback = new URL(env.TELEGRAM_LOGIN_REDIRECT_URI);
-    if (callback.origin !== new URL(env.APP_URL).origin || callback.pathname !== '/api/auth/telegram/callback') {
-      throw new Error('TELEGRAM_LOGIN_REDIRECT_URI must be /api/auth/telegram/callback on the same public origin as APP_URL.');
-    }
-    if (env.NODE_ENV === 'production' && callback.protocol !== 'https:') {
-      throw new Error('Telegram Login requires an HTTPS callback URL in production.');
-    }
+  if (env.TELEGRAM_BOT_ID && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_ID !== env.TELEGRAM_BOT_TOKEN.split(':')[0]) {
+    throw new Error('TELEGRAM_BOT_ID must match the bot ID prefix of TELEGRAM_BOT_TOKEN.');
   }
   // Validate the Telegram configuration at boot rather than at the first failed notification:
   // a malformed token is a deploy-time mistake, and the operator should see it in the boot log.

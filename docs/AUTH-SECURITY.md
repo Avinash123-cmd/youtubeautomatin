@@ -1,3 +1,5 @@
+> **Historical authentication reference:** active authentication is Telegram Bot-only; OIDC, passwords and email recovery are retired. See [telegram-bot-only-auth.md](telegram-bot-only-auth.md) before configuring or migrating any account.
+
 # Account security — second factor, recovery, devices
 
 Everything described here is implemented in `apps/api/src/auth/` and `apps/web/app/security`, and is

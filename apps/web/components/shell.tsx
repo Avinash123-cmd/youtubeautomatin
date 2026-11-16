@@ -274,7 +274,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1180px] flex-1 px-4 pb-24 pt-5 sm:px-6 sm:py-7 lg:pb-7">{children}</main>
+        <main className="mx-auto w-full max-w-[1180px] flex-1 px-4 pb-24 pt-5 sm:px-6 sm:py-7 lg:pb-7">{!session.user?.authMethods?.includes('TELEGRAM_BOT') ? <p role="alert" className="mb-5 rounded-xl bg-caution-soft p-4 text-sm text-caution">Authentication has moved to Telegram. <Link href="/security" className="font-semibold underline">Link your Telegram account now</Link> before this existing session expires.</p> : null}{children}</main>
 
         <nav
           aria-label="Quick navigation"

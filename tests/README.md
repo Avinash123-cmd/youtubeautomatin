@@ -1,3 +1,5 @@
+> Authentication cutover: see `docs/telegram-bot-only-auth.md`. Legacy direct-service auth tests are historical regression tests, not active provider routes. New bot tests explicitly verify the active module and retired-route rejection.
+
 # `tests/`
 
 Four kinds, deliberately separated by what they need to run.
@@ -20,7 +22,7 @@ cannot fail is not a test.
 ## Current explicit prerequisites
 
 Full-workflow E2E has no baked-in account credentials or machine-specific fixture path. Configure
-`CLIPFORGE_EMAIL`, `CLIPFORGE_PASSWORD` and `CLIPFORGE_TEST_VIDEO` (or pass the video path as argument).
+`CLIPFORGE_SESSION_COOKIE (from real Telegram login; secret)`, `a verified Telegram bot identity` and `CLIPFORGE_TEST_VIDEO` (or pass the video path as argument).
 Use a disposable environment and a speech-bearing source for Whisper. Unit test secrets must be
 non-production; the test commands in the current readiness report provide an example. Python service
 HTTP tests require the pinned FastAPI/Pydantic dependencies and httpx; FFmpeg verdict tests additionally

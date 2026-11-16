@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 const db = vi.hoisted(() => ({
+  telegramBotUpdate: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+  $executeRaw: vi.fn().mockResolvedValue(1),
   user: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
   telegramConnectionToken: { findUnique: vi.fn(), updateMany: vi.fn() },
 }));

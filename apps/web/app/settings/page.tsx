@@ -10,7 +10,6 @@ import {
   useStartTelegramConnection,
   useSecurityOverview,
   useSystemOverview,
-  useUnlinkTelegram,
 } from '@/lib/hooks';
 import { CONFIG_FIELDS, CONFIG_GROUPS, type ConfigField } from '@/lib/config-schema';
 import { Badge, Card, CardHeader, ErrorState, Field, Section, Skeleton, StatusBadge, Toast } from '@/components/ui';
@@ -47,7 +46,6 @@ export default function SettingsPage() {
   const security = useSecurityOverview();
   const { data: securityData, isLoading: securityLoading, refetch: refetchSecurity } = security;
   const startTelegram = useStartTelegramConnection();
-  const unlinkTelegram = useUnlinkTelegram();
   const [draft, setDraft] = useState<Draft>({});
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -273,7 +271,7 @@ export default function SettingsPage() {
         <Card>
           <div className="flex flex-wrap items-center gap-3 px-5 py-4">
             {session.data?.user?.avatarUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element -- external Google avatar, no layout shift to optimise
+              // eslint-disable-next-line @next/next/no-img-element -- external profile avatar, no layout shift to optimise
               <img src={session.data.user.avatarUrl} alt="" className="h-10 w-10 rounded-full border border-line object-cover" referrerPolicy="no-referrer" />
             ) : (
               <span className="flex h-10 w-10 items-center justify-center rounded-full bg-ink text-[13px] font-semibold text-white">
@@ -285,20 +283,11 @@ export default function SettingsPage() {
               <p className="truncate text-[12.5px] text-ink-soft">{session.data?.user?.email}</p>
             </div>
             <div className="ml-auto flex flex-wrap items-center gap-2">
-              {(session.data?.user?.authMethods?.length ? session.data.user.authMethods : ['PASSWORD']).map((method) => (
-                <StatusBadge key={method} value={method === 'GOOGLE' ? 'CONNECTED' : 'ACTIVE'} />
-              ))}
-              <span className="text-[11.5px] text-ink-faint">
-                {(session.data?.user?.authMethods ?? ['PASSWORD']).includes('GOOGLE') ? 'Google linked' : 'Google not linked'}
-                {' · '}
-                {(session.data?.user?.authMethods ?? []).includes('TELEGRAM') ? 'Telegram sign-in linked' : 'Telegram sign-in not linked'}
-              </span>
+              <StatusBadge value="ACTIVE" /><span className="text-[11.5px] text-ink-faint">Telegram Bot authentication</span>
             </div>
           </div>
           <p className="border-t border-line px-5 py-3 text-[12px] leading-relaxed text-ink-soft">
-            To link Google, sign out and choose <strong>Continue with Google</strong> using this same
-            email address — the API links the identities and your password keeps working. To unlink,
-            an operator clears <code className="rounded bg-surface-sunken px-1">firebaseUid</code> on this row.
+            Telegram is the only sign-in provider. Email is profile information only. Manage your verified identity and devices in Security.
           </p>
         </Card>
       </Section>
@@ -307,7 +296,7 @@ export default function SettingsPage() {
         <Card className="px-5 py-4">
           <div className="flex flex-wrap items-center gap-3">
             <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-semibold text-ink">{securityData?.telegram.connected ? 'Telegram bot connected' : securityData?.telegram.linked ? 'Telegram chat linked' : 'No Telegram bot connection'}</p>
+              <p className="text-[13px] font-semibold text-ink">{securityData?.telegram.connected ? 'Telegram bot connected' : 'No Telegram bot connection'}</p>
               <p className="mt-1 text-[12px] text-ink-soft">
                 {securityData?.telegram.username
                   ? `Connected as @${securityData.telegram.username}.`
@@ -316,11 +305,6 @@ export default function SettingsPage() {
                     : 'Link your personal Telegram account to receive notifications and use bot commands.'}
               </p>
             </div>
-            {securityData?.telegram.connected || securityData?.telegram.linked ? (
-              <button type="button" className="btn-secondary" disabled={unlinkTelegram.isPending} onClick={() => { setTelegramLink(null); unlinkTelegram.mutate(); }}>
-                {unlinkTelegram.isPending ? 'Disconnecting…' : 'Disconnect'}
-              </button>
-            ) : null}
             {!securityData?.telegram.connected ? (
               <button type="button" className="btn-primary" disabled={startTelegram.isPending || securityLoading} onClick={() => startTelegram.mutate(undefined, { onSuccess: setTelegramLink })}>
                 {startTelegram.isPending ? 'Preparing link…' : 'Connect Telegram'}
@@ -335,7 +319,6 @@ export default function SettingsPage() {
             </div>
           ) : null}
           {startTelegram.error ? <p role="alert" className="mt-3 text-[12px] text-danger">{startTelegram.error.message}</p> : null}
-          {unlinkTelegram.error ? <p role="alert" className="mt-3 text-[12px] text-danger">{unlinkTelegram.error.message}</p> : null}
         </Card>
       </Section>
 
@@ -343,7 +326,7 @@ export default function SettingsPage() {
         <Card>
           <ul className="divide-y divide-line text-[13px]">
             {[
-              ['Password hashing', 'Argon2id with per-user salt'],
+              ['Authentication', 'Telegram Bot private-chat verification'],
               ['Session', 'HMAC-signed cookie, HttpOnly, SameSite=Lax, DB-backed revocation'],
               ['CSRF', 'Double-submit token, verified server-side on every mutating request'],
               ['Credentials at rest', 'AES-256-GCM with an environment-provided key'],

@@ -71,17 +71,20 @@ export class TelegramAccountService {
     const command = rawCommand.toLowerCase().split('@')[0];
     const chatId = String(chat.id);
 
+    if (command === '/start' && argument && TOKEN_PATTERN.test(argument)) {
+      await this.completeConnection(argument, String(sender.id), chatId, sender.username ?? null, update.update_id);
+      return;
+    }
+    // Informational commands are best-effort replies; deduplicate before sending anything.
+    const accepted = await prisma.telegramBotUpdate.createMany({ data: { id: BigInt(update.update_id) }, skipDuplicates: true });
+    if (!accepted.count) return;
     if (command === '/start') {
-      if (argument && TOKEN_PATTERN.test(argument)) {
-        await this.completeConnection(argument, String(sender.id), chatId, sender.username ?? null);
-        return;
-      }
-      await this.reply(chatId, 'Welcome to ClipForge. To connect this Telegram account, start the connection from your signed-in ClipForge settings page. Use /help to see commands.');
+      await this.reply(chatId, 'Welcome to ClipForge. To connect this Telegram account, start the connection from your signed-in ClipForge settings page. To sign in, create a login link on the ClipForge login page and press Start. Use /help to see commands.');
       return;
     }
 
     if (command === '/help') {
-      await this.reply(chatId, 'ClipForge bot commands:\n/status — check the account connection\n/link — open ClipForge settings to start a secure connection\n/unlink — remove this bot connection');
+      await this.reply(chatId, 'ClipForge bot commands:\n/status — check the account connection\n/link — open ClipForge settings to start a secure connection\n/unlink — account identity migration help');
       return;
     }
 
@@ -107,11 +110,14 @@ export class TelegramAccountService {
     await this.reply(chatId, 'I did not recognize that command. Send /help for the list of commands.');
   }
 
-  private async completeConnection(token: string, telegramUserId: string, chatId: string, username: string | null): Promise<void> {
+  private async completeConnection(token: string, telegramUserId: string, chatId: string, username: string | null, updateId: number): Promise<void> {
     const tokenHash = hashToken(token);
     const now = new Date();
     try {
       const userId = await prisma.$transaction(async (tx) => {
+        const accepted = await tx.telegramBotUpdate.createMany({ data: { id: BigInt(updateId) }, skipDuplicates: true });
+        if (!accepted.count) return null;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`telegram-bot:${telegramUserId}`}, 0))`;
         const connection = await tx.telegramConnectionToken.findUnique({ where: { tokenHash } });
         if (!connection || connection.consumedAt || connection.expiresAt <= now) {
           throw new BadRequestException('invalid or expired connection token');
@@ -144,16 +150,22 @@ export class TelegramAccountService {
         return connection.userId;
       }, { isolationLevel: 'Serializable' });
 
+      if (!userId) return;
       await appendAuditLog({
         userId,
         action: 'AUTH_TELEGRAM_LINKED',
         summary: `Telegram bot account connected (chat ending ${chatId.slice(-4)})`,
       }).catch(() => undefined);
       await this.reply(chatId, 'Telegram is now connected to your ClipForge account. Use /status to check the connection or /disconnect to remove it.');
-    } catch {
+    } catch (error) {
+      if (!(error instanceof BadRequestException)) throw error;
       // The token, Telegram ID and database error are deliberately never echoed into chat.
       await this.reply(chatId, 'That connection link is invalid, expired, already used, or belongs to another account. Start a fresh connection from ClipForge Settings.');
     }
+  }
+
+  async loginNotice(chatId: string): Promise<void> {
+    await this.reply(chatId, 'Return to ClipForge to review and confirm your login. If you did not initiate this request, do not confirm it.');
   }
 
   private async reply(chatId: string, text: string): Promise<void> {

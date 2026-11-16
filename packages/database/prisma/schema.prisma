@@ -211,6 +211,7 @@ enum OtpChannel {
 }
 
 enum OtpPurpose {
+  SESSION_REVOCATION
   LOGIN
   PASSWORD_RESET
   TELEGRAM_LINK
@@ -284,6 +285,7 @@ model User {
   recoveryCodes RecoveryCode[]
   auditLogs   AuditLog[]
   telegramConnectionTokens TelegramConnectionToken[]
+  botLoginChallenges TelegramBotLoginChallenge[]
 
   @@index([status])
 }
@@ -1081,4 +1083,27 @@ model RecoveryCode {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, usedAt])
+}
+
+
+/// Bot login token and independent browser verifier are never stored in plaintext.
+model TelegramBotLoginChallenge {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  browserHash String @unique
+  userId String? @db.Uuid
+  expiresAt DateTime
+  approvedAt DateTime?
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+/// Auth webhook retry deduplication, committed with challenge approval.
+model TelegramBotUpdate {
+  id BigInt @id
+  createdAt DateTime @default(now())
+  @@index([createdAt])
 }

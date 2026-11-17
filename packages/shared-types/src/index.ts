@@ -492,3 +492,10 @@ export interface NotificationDeliveryView {
   createdAt: string;
   sentAt: string | null;
 }
+
+/** Server-side opt-in only. Hosted environments and production can never enable this. */
+export function developmentAuthBypassEnabled(environment: Record<string, string | undefined>): boolean {
+  return environment.AUTH_BYPASS === 'true'
+    && ['development', 'test'].includes(environment.NODE_ENV ?? '')
+    && !environment.VERCEL && !environment.RENDER && !environment.NETLIFY;
+}

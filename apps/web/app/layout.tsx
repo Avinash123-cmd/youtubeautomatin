@@ -1,3 +1,4 @@
+import { developmentAuthBypassEnabled } from '@clipforge/shared-types';
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { Providers } from '@/components/providers';
@@ -23,7 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="h-full">
       <body className="min-h-full">
         <Providers>
-          <Shell>{children}</Shell>
+          <Shell developmentBypass={developmentAuthBypassEnabled(process.env)}>{children}</Shell>
         </Providers>
       </body>
     </html>

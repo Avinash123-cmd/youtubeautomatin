@@ -12,6 +12,7 @@ export interface ComponentHealth {
 
 export interface SessionResponse {
   authenticated: boolean;
+  developmentAccess?: boolean;
   selfRegistrationEnabled?: boolean;
   csrfToken?: string;
   user?: { id: string; email: string; displayName: string; role: string; avatarUrl?: string | null; authMethods?: string[] };

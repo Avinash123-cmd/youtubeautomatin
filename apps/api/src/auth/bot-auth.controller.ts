@@ -94,6 +94,7 @@ export class BotAuthController {
   async session(@CurrentContext() ctx?: RequestContext) {
     if (!ctx) return { authenticated: false, selfRegistrationEnabled: false };
     const description = await describeBotSession(ctx);
+    if (ctx.developmentBypass) return { authenticated: false, developmentAccess: true, selfRegistrationEnabled: false, ...description };
     return { authenticated: true, selfRegistrationEnabled: false, csrfToken: this.sessions.reissueCsrf(ctx.sessionId), ...description };
   }
 

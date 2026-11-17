@@ -245,6 +245,25 @@ export class JobsService {
     };
   }
 
+  async analysis(id: string, ctx: RequestContext, query: { page: number; pageSize: number }) {
+    const job = await prisma.processingJob.findFirst({ where: { id, workspaceId: ctx.workspaceId }, select: { id: true } });
+    if (!job) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Job not found' });
+    const transcript = await prisma.transcript.findFirst({
+      where: { jobId: id, workspaceId: ctx.workspaceId }, orderBy: { createdAt: 'desc' },
+      select: { id: true, language: true, provider: true, model: true, wordTimestamps: true },
+    });
+    const skip = (query.page - 1) * query.pageSize;
+    const [segments, segmentCount, candidates, candidateCount] = await Promise.all([
+      transcript ? prisma.transcriptSegment.findMany({ where: { transcriptId: transcript.id }, orderBy: { sequence: 'asc' }, skip, take: query.pageSize,
+        select: { id: true, sequence: true, startSeconds: true, endSeconds: true, text: true, speakerLabel: true } }) : [],
+      transcript ? prisma.transcriptSegment.count({ where: { transcriptId: transcript.id } }) : 0,
+      prisma.highlightCandidate.findMany({ where: { jobId: id, workspaceId: ctx.workspaceId }, orderBy: [{ startSeconds: 'asc' }, { id: 'asc' }], skip, take: query.pageSize,
+        select: { id: true, startSeconds: true, endSeconds: true, hook: true, reason: true, transcriptText: true, contentCategory: true, qualityScore: true, scores: true, confidence: true, status: true } }),
+      prisma.highlightCandidate.count({ where: { jobId: id, workspaceId: ctx.workspaceId } }),
+    ]);
+    return { transcript, segments, segmentCount, candidates, candidateCount, ...query };
+  }
+
   async cancel(id: string, ctx: RequestContext) {
     const job = await prisma.processingJob.findFirst({ where: { id, workspaceId: ctx.workspaceId } });
     if (!job) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Job not found' });

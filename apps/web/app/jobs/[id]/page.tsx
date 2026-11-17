@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { JobAnalysis } from '@/components/job-analysis';
 import { useParams } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -130,6 +131,8 @@ export default function JobDetailPage() {
           </div>
         )}
       </Card>
+
+      <JobAnalysis jobId={data.id} terminal={terminal} />
 
       <Card>
         <CardHeader title="Configuration snapshot" description="The exact settings this job used — stored with the job so re-runs stay reproducible" />

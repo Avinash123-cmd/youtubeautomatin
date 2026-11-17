@@ -449,6 +449,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
             {
               clipId: clip.id,
               platform: 'YOUTUBE',
+              originalAiOutput: yt as Prisma.InputJsonValue,
               title: String(yt.title ?? clip.title).slice(0, 100),
               description: String(yt.description ?? '').slice(0, 5000),
               hashtags: (yt.hashtags ?? []) as string[],
@@ -461,6 +462,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
             {
               clipId: clip.id,
               platform: 'INSTAGRAM',
+              originalAiOutput: ig as Prisma.InputJsonValue,
               title: null,
               description: String(ig.caption ?? '').slice(0, 5000),
               hashtags: (ig.hashtags ?? []) as string[],

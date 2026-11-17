@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { createJobSchema, jobListQuerySchema } from '@clipforge/validation';
+import { createJobSchema, jobListQuerySchema, paginationSchema } from '@clipforge/validation';
 import { CurrentContext } from '../common/decorators/auth.decorators';
 import type { RequestContext } from '../common/guards/session-auth.guard';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
@@ -26,6 +26,13 @@ export class JobsController {
   @Get(':id')
   detail(@Param('id') id: string, @CurrentContext() ctx: RequestContext) {
     return this.jobs.detail(id, ctx);
+  }
+
+  @Get(':id/analysis')
+  @ApiOperation({ summary: 'Read paginated source transcript and scored candidates for an owned job' })
+  analysis(@Param('id') id: string, @Query() query: unknown, @CurrentContext() ctx: RequestContext) {
+    const pagination = paginationSchema.parse(query);
+    return this.jobs.analysis(id, ctx, pagination);
   }
 
   @Get(':id/events')

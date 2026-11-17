@@ -119,6 +119,10 @@ export class ClipsService {
     if (!clip) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Clip not found' });
     return {
       ...this.toDto(clip as never),
+      captionProvenance: clip.metadata.map(metadata => ({
+        platform: metadata.platform, originalAiOutput: metadata.originalAiOutput,
+        generatedAt: metadata.generatedAt.toISOString(), editedAt: metadata.editedAt?.toISOString() ?? null,
+      })),
       candidate: clip.candidate
         ? {
             hook: clip.candidate.hook,
@@ -179,6 +183,7 @@ export class ClipsService {
         ...(patch.hashtags !== undefined ? { hashtags: patch.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)) } : {}),
         ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
         reviewStatus: 'APPROVED',
+        editedAt: new Date(),
       },
     });
     await appendAuditLog({

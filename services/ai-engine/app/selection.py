@@ -13,6 +13,7 @@ Design rules encoded here:
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -239,6 +240,9 @@ def validate_and_normalise(
             continue
 
         notes: list[str] = []
+        if not math.isfinite(start) or not math.isfinite(end):
+            rejected.append({"candidate": item, "reason": "NON_FINITE_TIMESTAMPS"})
+            continue
         if end <= start:
             rejected.append({"candidate": item, "reason": "INVERTED_RANGE"})
             continue
@@ -289,9 +293,16 @@ def validate_and_normalise(
         if not model_transcript:
             notes.append("model transcript empty; source text substituted")
 
-        scores = {key: _clamp(float(item.get("scores", {}).get(key, 0) or 0), 0, 10) for key in RUBRIC}
+        try:
+            raw_scores = item.get("scores", {})
+            scores = {key: _finite_number(raw_scores.get(key, 0) or 0) for key in RUBRIC}
+            scores = {key: _clamp(value, 0, 10) for key, value in scores.items()}
+            model_score = _clamp(_finite_number(item.get("quality_score", 0) or 0), 0, 100)
+            confidence = _clamp(_finite_number(item.get("confidence", 0.5)), 0, 1)
+        except (TypeError, ValueError, AttributeError):
+            rejected.append({"candidate": item, "reason": "MALFORMED_SCORES"})
+            continue
         computed = compute_quality_score(scores)
-        model_score = _clamp(float(item.get("quality_score", 0) or 0), 0, 100)
         # The rubric is authoritative; the model's headline number may only lower it.
         quality = min(computed, int(model_score)) if model_score else computed
         if computed != int(model_score) and model_score:
@@ -311,7 +322,7 @@ def validate_and_normalise(
                 transcript=spoken,
                 content_category=str(item.get("content_category", "educational")),
                 quality_score=quality,
-                confidence=_clamp(float(item.get("confidence", 0.5) or 0.5), 0, 1),
+                confidence=confidence,
                 visual_context=str(item.get("visual_context", ""))[:400],
                 scores=scores,
                 validation_notes=notes,
@@ -559,7 +570,7 @@ def _transcript_for_window(segments: list[dict], start: float, end: float) -> st
         words = [w["word"] for w in segment.get("words", []) if w["end"] > start and w["start"] < end]
         if words:
             parts.append(_join_words(words))
-        elif segment["end"] > start and segment["start"] < end:
+        elif not segment.get("words") and segment["start"] >= start and segment["end"] <= end:
             parts.append(segment["text"])
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
@@ -578,3 +589,12 @@ def _overlap_ratio(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _finite_number(value: object) -> float:
+    if isinstance(value, bool):
+        raise ValueError("Boolean is not a score")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Score must be finite")
+    return number

@@ -11,6 +11,7 @@ from . import fixture_provider, media, selection, vision
 from .config import Settings
 from .gemini import GeminiClient, GeminiError, SchemaValidationError
 from .transcribe import transcribe
+from .timing import validate_transcript, TranscriptTimingError
 
 logger = logging.getLogger("ai-engine.pipeline")
 
@@ -62,6 +63,10 @@ def analyze(settings: Settings, request: dict) -> dict:
     else:
         transcript = transcribe(settings, audio_path, language=language)
         reused_flag = False
+    try:
+        validate_transcript(transcript, probe.duration_seconds)
+    except TranscriptTimingError as exc:
+        raise AnalysisRequestError(str(exc)) from exc
     segments = transcript["segments"]
     if not segments:
         raise AnalysisRequestError(
@@ -83,6 +88,7 @@ def analyze(settings: Settings, request: dict) -> dict:
     vision_started = time.time()
     frames: list[dict] = []
     observations: list[dict] = []
+    vision_usage = {"prompt_tokens": 0, "candidate_tokens": 0, "total_tokens": 0, "calls": 0}
     if request.get("enable_vision", True):
         scene_times = media.detect_scenes(settings, video_path)
         budget = vision.estimate_frame_count(probe.duration_seconds, settings.max_vision_frames)

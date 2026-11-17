@@ -136,7 +136,7 @@ def detect_scenes(settings: Settings, video_path: str | Path, threshold: float =
             str(video_path),
             "-vf",
             f"scale=320:-2,select='gt(scene,{threshold})',showinfo",
-            "-vsync",
+            "-fps_mode",
             "vfr",
             "-f",
             "null",
@@ -146,6 +146,8 @@ def detect_scenes(settings: Settings, video_path: str | Path, threshold: float =
         text=True,
         timeout=1800,
     )
+    if proc.returncode != 0:
+        raise MediaError(f"Scene detection failed ({proc.returncode}): {proc.stderr[-800:]}")
     times: list[float] = []
     for line in proc.stderr.splitlines():
         if "pts_time:" not in line:

@@ -140,20 +140,21 @@ export function computeQualityScore(scores: Record<string, number>): number {
 }
 
 export function isYouTubeUrl(url: string): boolean {
-  return /^https:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//.test(url);
+  return parseYouTubeVideoId(url) !== null;
 }
 
-/** Extracts a YouTube video id without downloading anything. */
+/** Strict reference parsing only; no request or download is performed. */
 export function parseYouTubeVideoId(url: string): string | null {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname === 'youtu.be') return parsed.pathname.slice(1) || null;
-    const v = parsed.searchParams.get('v');
-    if (v) return v;
-    const shorts = parsed.pathname.match(/\/shorts\/([\w-]{6,})/);
-    if (shorts) return shorts[1] ?? null;
-    return null;
-  } catch {
-    return null;
-  }
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return null;
+    if (!['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(parsed.hostname)) return null;
+    let id: string | null = null;
+    if (parsed.hostname === 'youtu.be') id = parsed.pathname.match(/^\/([\w-]{11})\/?$/)?.[1] ?? null;
+    else if (parsed.pathname === '/watch') {
+      if (parsed.searchParams.getAll('v').length !== 1) return null;
+      id = parsed.searchParams.get('v');
+    } else id = parsed.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{11})\/?$/)?.[1] ?? null;
+    return id && /^[\w-]{11}$/.test(id) ? id : null;
+  } catch { return null; }
 }

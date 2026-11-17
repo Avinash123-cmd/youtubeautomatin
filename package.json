@@ -41,7 +41,9 @@
     "verify:health": "bash infrastructure/scripts/healthcheck.sh",
     "verify:pipeline": ".venv/bin/python infrastructure/scripts/verify-pipeline.py",
     "openapi:export": "curl -fsS http://127.0.0.1:4000/api/docs/openapi.json -o docs/openapi.json",
-    "pretest:unit": "npm run build:packages"
+    "pretest:unit": "npm run build:packages",
+    "build:api": "npm run build -w @clipforge/api",
+    "start:api": "npm run start -w @clipforge/api"
   },
   "devDependencies": {
     "typescript": "5.7.2",

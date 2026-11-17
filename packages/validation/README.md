@@ -27,3 +27,6 @@ schema sources automatically: restart after editing them.
 Unit tests normally alias imports to TypeScript source. `tests/unit/validation-package-entry.test.ts`
 also loads the real built package in fresh Node processes from both app directories, catching absent
 or incorrectly initialized runtime exports that source-only tests cannot detect.
+
+The API hooks additionally build platform-connectors and database (including Prisma generation)
+before compiling Nest; rebuilding validation alone is not sufficient for a clean backend deploy.

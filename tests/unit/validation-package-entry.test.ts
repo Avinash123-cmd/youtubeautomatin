@@ -33,7 +33,9 @@ describe('validation workspace runtime entry (no Vitest source aliases)', () => 
     for (const app of ['apps/web', 'apps/api']) {
       const pkg = manifest(app);
       for (const hook of ['predev', 'prebuild', 'pretypecheck']) {
-        expect(pkg.scripts[hook]).toBe('npm run build -w @clipforge/validation');
+        expect(pkg.scripts[hook]).toBe(app === 'apps/api'
+          ? 'npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database'
+          : 'npm run build -w @clipforge/validation');
       }
     }
     const validation = manifest('packages/validation');
@@ -43,4 +45,20 @@ describe('validation workspace runtime entry (no Vitest source aliases)', () => 
     expect(validation.types).toBe('dist/index.d.ts');
     expect(validation.scripts.prebuild).toBe('npm run build -w @clipforge/shared-types');
   });
+});
+
+it('loads all backend runtime workspace entries and generated Prisma models without aliases', () => {
+  execFileSync(process.execPath, ['-e', `
+    const assert = require('node:assert/strict');
+    for (const name of ['database', 'platform-connectors', 'validation', 'shared-types']) {
+      assert(require.resolve('@clipforge/' + name).replaceAll('\\\\', '/').endsWith('/dist/index.js'));
+      assert(require('@clipforge/' + name));
+    }
+    const { Prisma, OtpChannel, OtpMode, OtpPurpose } = require('@prisma/client');
+    assert(OtpChannel && OtpMode && OtpPurpose);
+    assert(Prisma.dmmf.datamodel.models.some(model => model.name === 'SourceVideo'));
+  `], { cwd: path.join(root, 'apps/api'), encoding: 'utf8' });
+  const pkg = manifest('.');
+  expect(pkg.scripts['build:api']).toBe('npm run build -w @clipforge/api');
+  expect(pkg.scripts['start:api']).toBe('npm run start -w @clipforge/api');
 });

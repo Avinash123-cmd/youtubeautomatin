@@ -17,7 +17,7 @@
  *     (a job transition, a published post row), never from a UI action.
  */
 import { isTelegramWebhookUrl } from '../common/telegram-webhook-url';
-import { Inject, Injectable, Logger, Optional, type OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, type OnApplicationBootstrap } from '@nestjs/common';
 import { prisma, ConfigurationService } from '@clipforge/database';
 import {
   CONFIG_KEYS,
@@ -83,7 +83,7 @@ export interface NotificationClientOptions {
 const STALE_PENDING_MS = 2 * 60_000;
 
 @Injectable()
-export class NotificationsService implements OnModuleInit {
+export class NotificationsService implements OnApplicationBootstrap {
   private readonly logger = new Logger('Notifications');
   private readonly client: TelegramClient | null;
   private probeCache: BotProbeCache | null = null;
@@ -98,8 +98,9 @@ export class NotificationsService implements OnModuleInit {
    * API process boot: retry whatever the previous process left PENDING. The scheduler does the same
    * for the worker fleet; doing it here too means a dashboard-only deployment still recovers.
    */
-  onModuleInit(): void {
-    void this.retryPending().catch((error: Error) => this.logger.warn(`startup retry failed: ${error.message}`));
+  onApplicationBootstrap(): void {
+    // Runs only after all critical dependency initialization hooks have succeeded.
+    void this.retryPending().catch(() => this.logger.warn('Notification startup retry failed; check database availability and notification configuration.'));
   }
 
   /** Null when no token is configured — every call site handles that as "not configured", not as an error. */

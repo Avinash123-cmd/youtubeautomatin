@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { boundedProbe, reportedServiceStatus } from '../common/health-probe';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigurationService, prisma } from '@clipforge/database';
@@ -36,7 +35,7 @@ export class SystemService {
         latencyMs: Date.now() - started,
       };
     } catch (error) {
-      return { component: 'postgres', status: 'down', message: (error as Error).message };
+      return { component: 'postgres', status: 'down', message: 'Dependency request failed or timed out; check service configuration, credentials/TLS and connectivity' };
     }
   }
 
@@ -46,27 +45,23 @@ export class SystemService {
       const pong = await boundedProbe(() => this.redis.client.ping(), env.HEALTHCHECK_TIMEOUT_MS);
       return { component: 'redis', status: pong === 'PONG' ? 'healthy' : 'degraded', message: `PING -> ${pong}`, latencyMs: Date.now() - started };
     } catch (error) {
-      return { component: 'redis', status: 'down', message: (error as Error).message };
+      return { component: 'redis', status: 'down', message: 'Dependency request failed or timed out; check service configuration, credentials/TLS and connectivity' };
     }
   }
 
   async storageHealth(): Promise<ComponentHealth> {
     const driver = this.storage.driver;
-    const key = `health/${randomUUID()}.txt`;
     try {
-      await boundedProbe(() => this.storage.putBuffer(key, Buffer.from('clipforge storage probe'), 'text/plain'), env.HEALTHCHECK_TIMEOUT_MS);
-      const exists = await boundedProbe(() => this.storage.exists(key), env.HEALTHCHECK_TIMEOUT_MS);
+      await this.storage.verifyReadWrite();
       const publicCheck = await boundedProbe(() => this.storage.expectPublicHttps(), env.HEALTHCHECK_TIMEOUT_MS);
       return {
         component: 'storage',
-        status: exists ? 'healthy' : 'degraded',
-        message: `${driver} driver ${exists ? 'read/write OK' : 'write verification failed'}${publicCheck.ok ? '' : ` — ${publicCheck.reason}`}`,
+        status: 'healthy',
+        message: `${driver} driver byte read/write verified${publicCheck.ok ? '' : ` — ${publicCheck.reason}`}`,
         details: { driver, publicHttps: publicCheck.ok },
       };
     } catch (error) {
-      return { component: 'storage', status: 'down', message: (error as Error).message, details: { driver } };
-    } finally {
-      await boundedProbe(() => this.storage.delete(key), env.HEALTHCHECK_TIMEOUT_MS).catch(() => undefined);
+      return { component: 'storage', status: 'down', message: 'Dependency request failed or timed out; check service configuration, credentials/TLS and connectivity', details: { driver } };
     }
   }
 
@@ -87,7 +82,7 @@ export class SystemService {
         details: body as Record<string, unknown>,
       };
     } catch (error) {
-      return { component: 'ai-engine', status: 'down', message: (error as Error).message };
+      return { component: 'ai-engine', status: 'down', message: 'Dependency request failed or timed out; check service configuration, credentials/TLS and connectivity' };
     }
   }
 
@@ -104,7 +99,7 @@ export class SystemService {
         details: body as Record<string, unknown>,
       };
     } catch (error) {
-      return { component: 'video-processor', status: 'down', message: (error as Error).message };
+      return { component: 'video-processor', status: 'down', message: 'Dependency request failed or timed out; check service configuration, credentials/TLS and connectivity' };
     }
   }
 
@@ -182,9 +177,9 @@ export class SystemService {
   }
 
   async health() {
-    const [db, redis] = await Promise.all([this.databaseHealth(), this.redisHealth()]);
-    const healthy = db.status === 'healthy' && redis.status === 'healthy';
-    return { status: healthy ? 'ok' : 'degraded', uptimeSeconds: Math.round(process.uptime()), version: process.env.npm_package_version ?? '1.0.0', checks: [db, redis] };
+    const [db, redis, storage] = await Promise.all([this.databaseHealth(), this.redisHealth(), this.storageHealth()]);
+    const healthy = storage.status === 'healthy' && db.status === 'healthy' && redis.status === 'healthy';
+    return { status: healthy ? 'ok' : 'degraded', uptimeSeconds: Math.round(process.uptime()), version: process.env.npm_package_version ?? '1.0.0', checks: [db, redis, storage] };
   }
 
   async systemOverview(workspaceId: string) {

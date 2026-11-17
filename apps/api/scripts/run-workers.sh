@@ -18,13 +18,14 @@ FAILURE_WINDOW="${WORKER_FAILURE_WINDOW_SECONDS:-300}"
 declare -A pid_of role_of failures started_at
 
 shutdown() {
+  local exit_code="${1:-0}"
   echo "signal received — stopping workers"
   for pid in "${!pid_of[@]}"; do kill "${pid_of[$pid]}" 2>/dev/null; done
   # shellcheck disable=SC2046
   wait $(printf '%s ' "${!pid_of[@]}") 2>/dev/null
-  exit 0
+  exit "$exit_code"
 }
-trap shutdown TERM INT
+trap 'shutdown 0' TERM INT
 
 for role in $ROLES; do
   node "dist/workers/$role.worker.js" &
@@ -54,7 +55,7 @@ while :; do
       echo "$role worker (pid $pid) exited with code $code — failure $count/$MAX_FAILURES"
       if [ "$count" -ge "$MAX_FAILURES" ]; then
         echo "$role crashed $count times within ${FAILURE_WINDOW}s — escalating so the host restarts the service"
-        shutdown
+        shutdown 1
       fi
 
       # 2s, 4s, 8s, 16s, capped at 30s.

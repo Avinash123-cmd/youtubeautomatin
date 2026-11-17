@@ -1,5 +1,10 @@
 # Configuration
 
+> **Current production foundation:** [foundation-audit.md](foundation-audit.md) is the authoritative
+> 2026-11-16 A–J environment/storage/startup/proxy reference and verification ledger. Older
+> password/Firebase/OIDC and ephemeral-storage examples below are historical, not active login
+> or production durability instructions. Telegram-bot-only authentication remains required.
+
 Two layers, deliberately separate.
 
 ## 1. Environment (server secrets and topology)

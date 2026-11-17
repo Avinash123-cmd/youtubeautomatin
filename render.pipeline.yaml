@@ -1,3 +1,6 @@
+# RELEASE BLOCKER: separate services do not share WORK_DIR. This legacy topology is not
+# production-verified; use single-host docker-compose.prod.yml with shared work-data, or first
+# implement authenticated object transfer. See docs/foundation-audit.md.
 # Render blueprint — FULL STACK (paid): API + five workers + transcription + rendering.
 #
 # This is the file to use once you want the actual video pipeline. It needs Neon (or any Postgres),
@@ -44,7 +47,7 @@ services:
       - key: REDIS_PREFIX
         value: clipforge
       - key: CREDENTIAL_ENCRYPTION_KEY # openssl rand -base64 32
-        generateValue: true
+        sync: false # existing/base64 32-byte key; never rotate without credential re-encryption
       - key: SESSION_SECRET # openssl rand -base64 48
         generateValue: true
       - key: ADMIN_BOOTSTRAP_TOKEN # openssl rand -hex 32

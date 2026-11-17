@@ -17,6 +17,7 @@ const NAV: NavItem[] = [
   { href: '/jobs', label: 'Processing', short: 'Jobs', icon: 'M12 6v6l4 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z' },
   { href: '/clips', label: 'Clip library', short: 'Clips', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' },
   { href: '/publishing', label: 'Publishing', short: 'Publish', icon: 'M4 12l16-8-6 16-3-6z' },
+  { href: '/calendar', label: 'Content calendar', short: 'Calendar', icon: 'M4 5h16v16H4zM4 10h16M8 3v4M16 3v4' },
   { href: '/accounts', label: 'Connected accounts', short: 'Accounts', icon: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21a8 8 0 0 1 16 0' },
   { href: '/brand', label: 'Brand studio', short: 'Brand', icon: 'M12 3l2.6 5.6 6.1.8-4.4 4.3 1.1 6-5.4-3-5.4 3 1.1-6L3.3 9.4l6.1-.8z' },
   { href: '/security', label: 'Security', short: 'Security', icon: 'M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7zM9 12l2 2 4-4' },

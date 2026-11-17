@@ -1,5 +1,6 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { MulterError } from 'multer';
 import { ZodError } from 'zod';
 import { ConfigurationRequiredError } from '@clipforge/database';
 import { PlatformError } from '@clipforge/platform-connectors';
@@ -38,6 +39,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       code = 'PLATFORM_ERROR';
       message = exception.message;
       details = { platform: exception.platform, classification: exception.classification };
+    } else if (exception instanceof MulterError) {
+      // Nest 10 matches old Multer message strings. Patched parsers add/change messages;
+      // classify by the stable error type/code instead, without echoing uploaded filenames.
+      status = exception.code === 'LIMIT_FILE_SIZE' ? HttpStatus.PAYLOAD_TOO_LARGE : HttpStatus.BAD_REQUEST;
+      code = 'MULTIPART_INVALID';
+      message = exception.code === 'LIMIT_FILE_SIZE' ? 'Upload part exceeds the allowed size' : 'Invalid multipart upload';
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const body = exception.getResponse();

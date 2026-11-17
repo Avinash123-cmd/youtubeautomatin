@@ -30,10 +30,11 @@ stored in `localStorage`.
   the API is scoped through the authenticated membership.
 * Sessions are opaque random tokens in an HttpOnly cookie; only a SHA-256 HMAC of the token is
   stored (`Session.tokenHash`), so a database leak cannot be replayed as a session.
-* CSRF is a double-submit token: the raw value lives in a readable cookie, the hash in the session
-  row, and every mutating request must echo it in `x-csrf-token`.
-* Passwords use Argon2id. OAuth refresh/access tokens use AES-256-GCM (`CREDENTIAL_ENCRYPTION_KEY`)
-  and are never returned by any endpoint.
+* Active login is Telegram-bot-only with existing opaque sessions; retired password/Firebase
+  controllers are not registered. Social OAuth connects publishing accounts, not alternate login.
+* CSRF-protected mutations echo the server-issued token in `x-csrf-token`; session/anonymous binding
+  cookies remain HttpOnly. OAuth refresh/access tokens use AES-256-GCM (`CREDENTIAL_ENCRYPTION_KEY`)
+  and are never returned by a frontend-facing account endpoint.
 * Every mutation appends to `AuditLog` with actor, IP, user agent and structured metadata.
 
 ## Durable job execution
@@ -85,3 +86,9 @@ control states: RETRYING, NEEDS_CONFIGURATION, PARTIALLY_COMPLETED, FAILED, CANC
   been created) are reconciled by querying the platform before retrying.
 * Media that has to stay publicly reachable (Meta fetches the Reel file itself) is retained for the
   configured asset window; retention never deletes it early.
+
+## Current hardening evidence
+
+See [Platform audit and implementation ledger](platform-engineering-ledger.md) for this turn's
+verified changes and unverified release gates. Private local/S3 preview bytes now use the same
+workspace-scoped /media ID routes; no public source-bucket policy is required for browser playback.

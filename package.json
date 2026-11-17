@@ -54,6 +54,7 @@
     "prettier": "3.4.2"
   },
   "overrides": {
-    "typescript": "$typescript"
+    "typescript": "$typescript",
+    "multer": "2.5.0"
   }
 }

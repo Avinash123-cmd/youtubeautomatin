@@ -47,3 +47,10 @@ describe('dependency readiness', () => {
     expect(JSON.stringify(body)).not.toContain('private');
   });
 });
+
+it('makes core health fail when storage bytes cannot be read back', async () => {
+  vi.spyOn(service, 'databaseHealth').mockResolvedValue(healthy('postgres'));
+  vi.spyOn(service, 'redisHealth').mockResolvedValue(healthy('redis'));
+  vi.spyOn(service, 'storageHealth').mockResolvedValue({ component: 'storage', status: 'down', message: 'readback failed' });
+  expect((await service.health()).status).toBe('degraded');
+});

@@ -1,5 +1,7 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { StartupDependencyError } from '../startup-error';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import Redis from 'ioredis';
+import { boundedProbe } from '../health-probe';
 import { env } from '../env';
 
 /**
@@ -8,7 +10,7 @@ import { env } from '../env';
  * that lives in PostgreSQL.
  */
 @Injectable()
-export class RedisService implements OnModuleDestroy {
+export class RedisService implements OnModuleInit, OnModuleDestroy {
   readonly client: Redis;
   readonly subscriber: Redis;
 
@@ -24,6 +26,15 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  async onModuleInit(): Promise<void> {
+    try {
+      const replies = await boundedProbe(() => Promise.all([this.client.ping(), this.subscriber.ping()]), env.HEALTHCHECK_TIMEOUT_MS);
+      if (replies.some(reply => reply !== 'PONG')) throw new Error('Unexpected Redis response');
+    } catch {
+      throw new StartupDependencyError('redis');
+    }
+  }
+
   key(...parts: string[]): string {
     return [env.REDIS_PREFIX, ...parts].join(':');
   }
@@ -35,8 +46,10 @@ export class RedisService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.client.quit().catch(() => undefined);
-    await this.subscriber.quit().catch(() => undefined);
+    await Promise.all([this.client, this.subscriber].map(async connection => {
+      try { await boundedProbe(() => connection.quit(), env.HEALTHCHECK_TIMEOUT_MS); } catch { /* Force close below even during an outage. */ }
+      finally { connection.disconnect(); }
+    }));
   }
 }
 

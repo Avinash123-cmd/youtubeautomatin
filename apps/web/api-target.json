@@ -1,4 +1,4 @@
 {
-  "apiOrigin": null,
-  "note": "Set apiOrigin to the public URL of YOUR API \u2014 copy it from the Render service page (https, no trailing slash, no /api suffix). Render service names are global: if clipforge-api was taken, yours is clipforge-api-xxxx.onrender.com. Commit this file and Vercel rebuilds. API_INTERNAL_URL, when set in Vercel, takes precedence."
+  "apiOrigin": "https://youtubeautomatin.onrender.com",
+  "note": "Deployment fallback for the user-confirmed Render backend. API_INTERNAL_URL in Vercel overrides this at build time. Redeploy after changes. Local development ignores this file."
 }

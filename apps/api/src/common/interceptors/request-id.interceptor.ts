@@ -16,7 +16,7 @@ export class RequestIdInterceptor implements NestInterceptor {
     const started = Date.now();
     return next.handle().pipe(
       tap(() => {
-        workerLogger.child({ requestId, method: request.method, path: request.originalUrl, durationMs: Date.now() - started }).info('request completed');
+        workerLogger.child({ requestId, method: request.method, path: request.path, durationMs: Date.now() - started }).info('request completed');
       }),
     );
   }

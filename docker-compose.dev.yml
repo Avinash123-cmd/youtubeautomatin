@@ -165,6 +165,7 @@ services:
       dockerfile: infrastructure/docker/ai-engine.Dockerfile
     environment:
       AI_ENGINE_API_KEY: ${AI_ENGINE_API_KEY:?set AI_ENGINE_API_KEY}
+      NODE_ENV: development
       AI_PROVIDER: ${AI_PROVIDER:?set AI_PROVIDER explicitly (gemini or fixture for tests)}
       TEST_MODE: ${TEST_MODE:-0}
       WORK_DIR: /data/work

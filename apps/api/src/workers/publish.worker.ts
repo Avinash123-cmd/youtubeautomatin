@@ -323,10 +323,10 @@ async function publishToInstagram(
   if (config.shareToFeed === undefined) {
     throw new PlatformError('Instagram shareToFeed was never configured for this account', 'INSTAGRAM', 'PERMANENT');
   }
-  const publicUrl = storage.publicUrl(storageKey);
+  const publicUrl = await storage.platformReadUrl(storageKey);
   if (!publicUrl || !publicUrl.startsWith('https://')) {
     throw new PlatformError(
-      'Instagram requires a publicly reachable HTTPS media URL. Configure object storage with a public HTTPS base URL.',
+      'Instagram requires a publicly reachable HTTPS media URL. Configure private S3 storage; a short-lived read URL is generated for this authorized attempt.',
       'INSTAGRAM',
       'PERMANENT',
       { platformReason: 'MEDIA_URL_NOT_PUBLIC' },

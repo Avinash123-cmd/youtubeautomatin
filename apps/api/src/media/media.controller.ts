@@ -15,8 +15,8 @@ import { StorageService } from '../storage/storage.service';
  *
  * The local storage driver exposes objects here with HTTP Range support so the
  * dashboard can scrub video. Keys are resolved from the database by workspace
- * scope — a caller can never pass an arbitrary key. When STORAGE_DRIVER=s3 the
- * dashboard uses public/signed URLs instead and this route is unused.
+ * scope — a caller can never pass an arbitrary key. Both local and S3 objects
+ * are streamed only after the same session and workspace ownership checks.
  */
 /** Embedded 0.2 s 64x64 H.264 pre-flight asset (base64 of a real MP4 file). */
 const PROBE_MP4 = Buffer.from(
@@ -103,12 +103,6 @@ export class MediaController {
   }
 
   private async streamKey(key: string, req: Request, res: Response) {
-    if (this.storage.driver !== 'local') {
-      throw new BadRequestException({
-        code: 'VALIDATION_FAILED',
-        message: 'Streaming through the API is only available with the local storage driver; use the storage public URL',
-      });
-    }
     const total = await this.sizeOr404(key);
     const contentType = CONTENT_TYPES[extname(key).toLowerCase()] ?? 'application/octet-stream';
     // Rendered clips are immutable, so a re-download (seeking, preview, refresh) costs one

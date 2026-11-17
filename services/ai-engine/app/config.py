@@ -49,7 +49,7 @@ def load_settings() -> Settings:
     if provider not in ("gemini", "fixture"):
         raise ConfigurationError(f"Unsupported AI_PROVIDER '{provider}'")
     test_mode = os.environ.get("TEST_MODE") == "1"
-    if provider == "fixture" and not test_mode:
+    if provider == "fixture" and (not test_mode or os.environ.get("NODE_ENV") == "production" or os.environ.get("RENDER") == "true"):
         raise ConfigurationError(
             "AI_PROVIDER=fixture is only permitted in isolated automated test environments (set TEST_MODE=1). "
             "Production must use AI_PROVIDER=gemini."

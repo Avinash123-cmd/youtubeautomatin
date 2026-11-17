@@ -21,6 +21,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
+from services.media_paths import media_path
+
 from .config import ConfigurationError, Settings, load_settings
 from .gemini import GeminiError, SchemaValidationError
 from . import captions as captions_mod
@@ -150,11 +152,12 @@ def transcribe_endpoint(request: TranscribeRequest) -> dict:
     source = request.video_path or request.audio_path
     if not source:
         raise HTTPException(status_code=422, detail="video_path or audio_path is required")
+    source = media_path(source, cfg.work_dir)
     try:
         if request.audio_path and not request.video_path:
-            result = transcribe(cfg, request.audio_path, language=request.language)
+            result = transcribe(cfg, source, language=request.language)
         else:
-            audio = media.extract_audio(cfg, request.video_path, f"{cfg.work_dir}/{request.job_id}/audio.wav")
+            audio = media.extract_audio(cfg, source, f"{cfg.work_dir}/{request.job_id}/audio.wav")
             result = transcribe(cfg, audio, language=request.language)
     except Exception as exc:  # transcription failures must be visible, not retried silently
         logger.exception("transcription failed")
@@ -166,6 +169,7 @@ def transcribe_endpoint(request: TranscribeRequest) -> dict:
 def analyze_endpoint(request: AnalyzeRequest) -> dict:
     cfg = settings()
     payload = request.model_dump()
+    payload["video_path"] = media_path(request.video_path, cfg.work_dir)
     try:
         result = pipeline.analyze(cfg, payload)
         artifacts = pipeline.persist_artifacts(result, cfg.work_dir)

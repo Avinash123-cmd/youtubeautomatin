@@ -1,4 +1,7 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { StartupDependencyError } from '../common/startup-error';
+import { randomUUID } from 'node:crypto';
+import { boundedProbe } from '../common/health-probe';
+import { BadRequestException, Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -39,13 +42,13 @@ export interface MultipartUploadSession {
  * `STORAGE_DRIVER` is explicit (env). There is no driver fallback: if S3 is
  * selected but misconfigured the API refuses to start (see env.ts).
  *
- * - s3   : Cloudflare R2 / AWS S3 with presigned multipart uploads and public URLs.
- * - local: filesystem driver for non-production use. It exposes objects through
- *          the API's /media route; publishing eligibility refuses to run against
- *          it because Meta and YouTube require publicly reachable HTTPS media.
+ * - s3   : private Cloudflare R2 / AWS S3, multipart uploads and bounded signed platform reads.
+ * - local: persistent filesystem with session/workspace-protected /media ID routes.
+ *          Production requires a real persistent mount. Instagram fetch needs S3;
+ *          YouTube uploads bytes and does not require anonymous media access.
  */
 @Injectable()
-export class StorageService {
+export class StorageService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StorageService.name);
   private readonly s3: S3Client | null;
   readonly driver: 'local' | 's3';
@@ -61,6 +64,38 @@ export class StorageService {
             credentials: { accessKeyId: env.S3_ACCESS_KEY_ID!, secretAccessKey: env.S3_SECRET_ACCESS_KEY! },
           })
         : null;
+  }
+
+  async onModuleInit(): Promise<void> {
+    try { await this.verifyReadWrite(); }
+    catch { throw new StartupDependencyError('storage'); }
+  }
+
+  onModuleDestroy(): void { this.s3?.destroy(); }
+
+  /** Verify actual bytes, not just a successful HEAD or a configured public URL. */
+  async verifyReadWrite(): Promise<void> {
+    const key = `health/${randomUUID()}.txt`;
+    const expected = Buffer.from('clipforge storage probe');
+    let stream: Readable | undefined;
+    try {
+      await boundedProbe(async () => {
+        await this.putBuffer(key, expected, 'text/plain');
+        stream = (await this.getStream(key)).stream;
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of stream) {
+          const bytes = Buffer.from(chunk);
+          size += bytes.length;
+          if (size > expected.length) throw new Error('Storage readback mismatch');
+          chunks.push(bytes);
+        }
+        if (!Buffer.concat(chunks).equals(expected)) throw new Error('Storage readback mismatch');
+      }, env.HEALTHCHECK_TIMEOUT_MS);
+    } finally {
+      stream?.destroy();
+      await boundedProbe(() => this.delete(key), env.HEALTHCHECK_TIMEOUT_MS).catch(() => undefined);
+    }
   }
 
   /** Rejects key traversal and absolute paths; keys are always workspace-scoped. */
@@ -190,7 +225,7 @@ export class StorageService {
         await rm(this.localPath(key), { force: true });
       }
     } catch (error) {
-      this.logger.warn(`Failed to delete ${key}: ${(error as Error).message}`);
+      this.logger.warn('Storage deletion failed. Check storage permissions and service availability.');
     }
   }
 
@@ -205,6 +240,20 @@ export class StorageService {
     }
     const base = env.STORAGE_LOCAL_PUBLIC_BASE_URL!;
     return `${base.replace(/\/$/, '')}/${key}`;
+  }
+
+  /** Bearer capability for an explicitly authorized platform fetch, never a browser preview URL.
+   * Do not persist or log the returned URL. Local media routes require a session and cannot be
+   * fetched by Instagram. S3 stays private; its provider must be reachable over public HTTPS.
+   */
+  async platformReadUrl(key: string, expiresIn = 3600): Promise<string | null> {
+    this.assertSafeKey(key);
+    if (!Number.isInteger(expiresIn) || expiresIn < 60 || expiresIn > 86400) {
+      throw new BadRequestException('Platform media URL lifetime must be between 60 and 86400 seconds');
+    }
+    if (this.driver !== 's3') return null;
+    const url = await getSignedUrl(this.s3!, new GetObjectCommand({ Bucket: env.S3_BUCKET!, Key: key }), { expiresIn });
+    return new URL(url).protocol === 'https:' ? url : null;
   }
 
   /**
@@ -295,15 +344,10 @@ export class StorageService {
     }
   }
 
+  /** Configuration capability check only: not proof the provider can fetch an object. */
   async expectPublicHttps(): Promise<{ ok: boolean; reason?: string }> {
-    const probe = this.publicUrl('health/probe.mp4');
-    if (!probe) return { ok: false, reason: 'No public base URL configured for the active storage driver' };
-    if (!probe.startsWith('https://')) {
-      return {
-        ok: false,
-        reason: `Storage public URL is "${probe}", but Instagram and YouTube require publicly reachable HTTPS media. Configure S3_PUBLIC_BASE_URL (or a public HTTPS origin) before enabling automatic publishing.`,
-      };
-    }
-    return { ok: true };
+    if (this.driver !== 's3') return { ok: false, reason: 'Instagram cannot fetch session-authenticated local media. Configure private S3-compatible storage with a publicly reachable HTTPS endpoint.' };
+    const url = await this.platformReadUrl('health/probe.mp4');
+    return url ? { ok: true } : { ok: false, reason: 'Platform media fetch requires a publicly reachable HTTPS S3 endpoint.' };
   }
 }

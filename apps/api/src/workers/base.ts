@@ -1,4 +1,4 @@
-import { Worker, Job, type WorkerOptions } from 'bullmq';
+import { Worker, Job, DelayedError, type WorkerOptions } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { env, loadEnv } from '../common/env';
@@ -85,6 +85,10 @@ export function createWorker(
         await handler(job, runtime);
         runtime.logger.info(`done ${queue}#${job.id} in ${Date.now() - started}ms`);
       } catch (error) {
+        if (error instanceof DelayedError) {
+          runtime.logger.info(`deferred ${queue}#${job.id}: parent job lease is busy`);
+          throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         runtime.logger.error(`failed ${queue}#${job.id} after ${Date.now() - started}ms: ${message}`);
         throw error;

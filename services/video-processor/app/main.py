@@ -18,6 +18,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 
+from services.media_paths import media_path
+
 from . import audio as audio_mod
 from . import framing as framing_mod
 from . import renderer
@@ -28,6 +30,7 @@ logger = logging.getLogger("video-processor")
 app = FastAPI(title="ClipForge Video Processor", version="1.0.0")
 
 API_KEY = os.environ.get("VIDEO_PROCESSOR_API_KEY")
+WORK_DIR = os.environ.get("WORK_DIR", "/data/work")
 FFMPEG = os.environ.get("FFMPEG_PATH", "ffmpeg")
 FFPROBE = os.environ.get("FFPROBE_PATH", "ffprobe")
 
@@ -44,9 +47,10 @@ class ProbeRequest(BaseModel):
 
 
 class AudioRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     path: str
-    start: float | None = None
-    duration: float | None = None
+    start: float | None = Field(default=None, ge=0)
+    duration: float | None = Field(default=None, gt=0)
 
 
 class ValidateRequest(BaseModel):
@@ -115,6 +119,7 @@ def health():
 
 @app.post("/probe", dependencies=[Depends(require_api_key)])
 def probe(request: ProbeRequest) -> dict:
+    request.path = media_path(request.path, WORK_DIR)
     if not os.path.isfile(request.path):
         raise HTTPException(status_code=422, detail={"code": "NOT_FOUND", "message": f"{request.path} does not exist"})
     try:
@@ -139,11 +144,13 @@ def probe(request: ProbeRequest) -> dict:
 
 @app.post("/audio-analysis", dependencies=[Depends(require_api_key)])
 def audio_analysis(request: AudioRequest) -> dict:
+    request.path = media_path(request.path, WORK_DIR)
     return audio_mod.analyse(FFMPEG, request.path, request.start, request.duration)
 
 
 @app.post("/validate", dependencies=[Depends(require_api_key)])
 def validate(request: ValidateRequest) -> dict:
+    request.path = media_path(request.path, WORK_DIR)
     return renderer.validate_output(
         ffmpeg_path=FFMPEG,
         ffprobe_path=FFPROBE,
@@ -157,6 +164,13 @@ def validate(request: ValidateRequest) -> dict:
 
 @app.post("/render", dependencies=[Depends(require_api_key)])
 def render(request: RenderRequest) -> dict:
+    request.source_path = media_path(request.source_path, WORK_DIR)
+    request.output_path = media_path(request.output_path, WORK_DIR, output=True)
+    for field in ('watermark_path', 'intro_path', 'outro_path', 'background_music_path'):
+        value = getattr(request, field)
+        if value:
+            setattr(request, field, media_path(value, WORK_DIR))
+
     if not request.words:
         raise HTTPException(
             status_code=422,

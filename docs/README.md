@@ -1,5 +1,8 @@
 # docs/ — the written record
 
+For the current production foundation, begin with [foundation-audit.md](foundation-audit.md)
+(required environment, deployment fixes, actual tests and blocked acceptance gates).
+
 Start here, then follow the one link that matches what you are doing.
 
 | If you are… | read |
@@ -8,7 +11,7 @@ Start here, then follow the one link that matches what you are doing.
 | trying to understand how the pieces fit | [ARCHITECTURE.md](ARCHITECTURE.md), then [CODE-MAP.md](CODE-MAP.md) for the file-by-file view |
 | setting it up locally | the root [README.md](../README.md), then [CONFIGURATION.md](CONFIGURATION.md) |
 | deploying | [DEPLOY-VERCEL.md](DEPLOY-VERCEL.md) (dashboard on Vercel, backend on Render) and [OPERATIONS.md](OPERATIONS.md) |
-| turning on optional integrations | [ADD-API-KEYS.md](ADD-API-KEYS.md), [TELEGRAM-NOTIFICATIONS.md](TELEGRAM-NOTIFICATIONS.md) (free, 2-minute setup), [FIREBASE-AUTH.md](FIREBASE-AUTH.md), [PLATFORM-SETUP.md](PLATFORM-SETUP.md) |
+| turning on optional integrations | [ADD-API-KEYS.md](ADD-API-KEYS.md), [TELEGRAM-NOTIFICATIONS.md](TELEGRAM-NOTIFICATIONS.md) (free, 2-minute setup) (Firebase/OIDC/password docs are historical; active login is Telegram-bot-only), [PLATFORM-SETUP.md](PLATFORM-SETUP.md) |
 | reviewing what was verified, and what was not | [VERIFICATION.md](VERIFICATION.md) |
 | wondering what is still missing | [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) |
 | worried about secrets or tenancy | [SECURITY-NOTES.md](SECURITY-NOTES.md) |

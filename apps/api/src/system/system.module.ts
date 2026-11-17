@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../common/prisma.service';
 import { SystemController } from './system.controller';
 import { SystemService } from './system.service';
 import { DashboardController } from './dashboard.controller';
@@ -10,7 +9,7 @@ import { StorageModule } from '../storage/storage.module';
 @Module({
   imports: [StorageModule],
   controllers: [SystemController, DashboardController, DiagnosticsController],
-  providers: [SystemService, DiagnosticsService, PrismaService],
+  providers: [SystemService, DiagnosticsService],
   exports: [SystemService],
 })
 export class SystemModule {}

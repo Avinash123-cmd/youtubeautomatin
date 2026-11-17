@@ -12,6 +12,9 @@ COPY packages/platform-connectors/package.json packages/platform-connectors/
 RUN npm ci --workspaces --include-workspace-root --ignore-scripts
 
 FROM deps AS build
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages/shared-types packages/shared-types
+COPY packages/validation packages/validation
 COPY apps/web apps/web
 WORKDIR /app/apps/web
 # API_INTERNAL_URL is baked into the rewrite rules at build time; the browser never sees it.
@@ -28,6 +31,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
 COPY --from=build /app/apps/web ./apps/web
+COPY --from=build /app/packages/shared-types ./packages/shared-types
+COPY --from=build /app/packages/validation ./packages/validation
 COPY --from=build /app/package-lock.json ./package-lock.json
 USER clipforge
 EXPOSE 3000

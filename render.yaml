@@ -1,25 +1,13 @@
-# Render blueprint — DASHBOARD BACKEND, $0 (self-contained).
-#
-# One Blueprint click creates everything the Vercel dashboard needs to sign in and work:
-#   • clipforge-db     Render Postgres (free)        → DATABASE_URL
-#   • clipforge-redis  Render Key Value (free)       → REDIS_URL
-#   • clipforge-api    the NestJS API (free)         → https://clipforge-api.onrender.com
-#
-# No Neon, no Upstash, no R2 account, no values to paste. Migrations run on every deploy.
-#
-# What this does NOT include: the five BullMQ workers, the Python transcription service and the
-# FFmpeg renderer. They cannot run on Render's free plan (background workers are paid-only), so
-# uploads would sit at QUEUED. That full stack is `render.pipeline.yaml` — rename it to render.yaml
-# when you are ready to pay for it.
-#
-# Caveats of the free tier, stated plainly:
-#   • the API sleeps after 15 min idle; the first request afterwards takes ~30 s (the dashboard
-#     shows "Checking your session…" meanwhile, and /healthz reports the probe honestly)
-#   • free Postgres is deleted 30 days after creation — move to a paid plan for anything real
-#   • storage is the container's /tmp: anything uploaded disappears on the next deploy
-#
-# After this deploy finishes: copy the API URL, put it in apps/web/api-target.json (or Vercel's
-# API_INTERNAL_URL), and redeploy the dashboard. Full walk-through: docs/DEPLOY-VERCEL.md §2.
+# Render API foundation blueprint. NOT a complete video-processing deployment.
+# External private S3 storage and Telegram bot configuration are REQUIRED.
+# Managed free DB/Redis plans here are evaluation-only, not durable production guarantees.
+# Use paid managed persistence for production; configure/review settings on existing services
+# instead of creating duplicate APIs. See docs/foundation-audit.md.
+# API health probes verify actual Postgres, Redis and storage byte readback.
+# No destructive reset or automatic migration is configured. Apply reviewed additive migrations
+# as a controlled release step using npm run db:deploy after backup.
+# Separate Render media services do NOT share WORK_DIR automatically: render.pipeline.yaml
+# needs a shared-filesystem/transfer design before its processing path can work.
 
 databases:
   - name: clipforge-db
@@ -50,8 +38,8 @@ services:
         value: production
       - key: API_PORT
         value: 4000
-      - key: RUN_MIGRATIONS # the image applies prisma migrations before starting
-        value: 1
+      - key: RUN_MIGRATIONS # controlled release step, not automatic boot-time migration
+        value: 0
       - key: TIMEZONE
         value: Asia/Kolkata
       - key: LOG_LEVEL
@@ -59,9 +47,9 @@ services:
 
       # --- the origin of the deployed dashboard. Change it if your Vercel domain differs. ---
       - key: APP_URL
-        value: https://youtube-automation-delta-eosin.vercel.app
+        value: https://youtubeautomation-mauve.vercel.app
       - key: ALLOWED_ORIGINS
-        value: https://youtube-automation-delta-eosin.vercel.app
+        value: https://youtubeautomation-mauve.vercel.app
 
       # --- managed services created by this same blueprint ---
       - key: DATABASE_URL
@@ -78,7 +66,7 @@ services:
 
       # --- secrets generated once, readable later in the Render dashboard ---
       - key: CREDENTIAL_ENCRYPTION_KEY
-        generateValue: true
+        sync: false # existing/base64 32-byte key; never rotate without credential re-encryption
       - key: SESSION_SECRET
         generateValue: true
       - key: ADMIN_BOOTSTRAP_TOKEN # this is what you type into "First-run setup"
@@ -86,19 +74,25 @@ services:
       - key: ALLOW_SELF_REGISTRATION
         value: false
 
-      # --- storage: the container's /tmp (fine for a demo, wiped on deploy) ---
+      # Private durable S3-compatible storage; no ephemeral /tmp source-video store.
       - key: STORAGE_DRIVER
-        value: local
-      - key: STORAGE_LOCAL_ROOT
-        value: /tmp/clipforge/storage
-      - key: STORAGE_LOCAL_PUBLIC_BASE_URL
-        value: https://clipforge-api.onrender.com
+        value: s3
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
       - key: WORK_DIR
         value: /tmp/clipforge/work
 
       # --- internal services that this free stack does not run ---
       # The API requires these to boot, so they point at nothing and every probe reports them
-      # down, which is the truth. Add render.pipeline.yaml to make them real.
+      # down, which is the truth. A full processing deployment also needs a shared WORK_DIR.
       - key: AI_ENGINE_URL
         value: https://ai-engine.not-deployed.invalid
       - key: AI_ENGINE_API_KEY
@@ -108,69 +102,17 @@ services:
       - key: VIDEO_PROCESSOR_API_KEY
         generateValue: true
 
-      # --- optional: Telegram notifications (docs/TELEGRAM-NOTIFICATIONS.md) ---
-      # Free, no third party. Leave blank to disable; the dashboard then reports the channel as
-      # not configured and everything else keeps working.
-      - key: TELEGRAM_BOT_TOKEN # @BotFather → /newbot → API token
+      # Telegram bot is the ONLY active authentication mechanism.
+      - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: TELEGRAM_BOT_USERNAME # required with token and secret when using bot commands/webhook
+      - key: TELEGRAM_BOT_USERNAME
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
         sync: false
-      - key: TELEGRAM_CHAT_ID # e.g. -1001234567890 (group) or @channelusername
+      - key: TELEGRAM_WEBHOOK_URL
         sync: false
-      # --- optional: Telegram Login OIDC (separate from the Bot API token) ---
-      - key: TELEGRAM_LOGIN_CLIENT_ID
+      - key: TELEGRAM_CHAT_ID # optional outbound notifications
         sync: false
-      - key: TELEGRAM_LOGIN_CLIENT_SECRET
-        sync: false
-      - key: TELEGRAM_LOGIN_REDIRECT_URI
-        sync: false
-      - key: TELEGRAM_LOGIN_ALLOW_NEW_USERS
-        value: false
-
-      # --- optional: one-time codes by email (docs/AUTH-SECURITY.md) ---
-      # Unset SMTP_HOST ⇒ the email second factor reports itself unavailable and cannot be enabled;
-      # password-only sign-in keeps working. Any relay works (Brevo free tier, Mailtrap, Gmail).
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_SECURE
-        value: "false"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: SMTP_FROM # e.g. ClipForge <no-reply@example.com>
-        sync: false
-      # One-time-code policy. Defaults match docs/AUTH-SECURITY.md.
-      - key: OTP_TTL_SECONDS
-        value: "300"
-      - key: OTP_RESEND_COOLDOWN_SECONDS
-        value: "60"
-      - key: OTP_MAX_ATTEMPTS
-        value: "5"
-
-      # --- optional: Google sign-in (docs/FIREBASE-AUTH.md). Leave unset for password-only. ---
-      - key: FIREBASE_PROJECT_ID
-        sync: false
-      - key: FIREBASE_CLIENT_EMAIL
-        sync: false
-      - key: FIREBASE_PRIVATE_KEY
-        sync: false
-      - key: FIREBASE_SERVICE_ACCOUNT_JSON
-        sync: false
-      - key: FIREBASE_WEB_API_KEY
-        sync: false
-      - key: FIREBASE_WEB_AUTH_DOMAIN
-        sync: false
-      - key: FIREBASE_WEB_APP_ID
-        sync: false
-      - key: FIREBASE_ALLOW_NEW_USERS
-        value: false
-      - key: FIREBASE_REQUIRE_VERIFIED_EMAIL
-        value: true
 
       # --- optional: Gemini for real transcripts/metadata (the pipeline needs it) ---
       - key: GEMINI_API_KEY

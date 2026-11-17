@@ -283,7 +283,7 @@ Use the **repository root**, so all workspaces and the root lockfile are include
 | Runtime | Node |
 | Root Directory | **Leave blank** (repository root) |
 | Build Command | `npm ci --include=dev && npm run build:api` |
-| Start Command | `API_PORT=${PORT:-4000} npm run start:api` |
+| Start Command | `npm run start:api` |
 | Health Check Path | `/api/system/health` |
 | Environment | `NODE_ENV=production` |
 | Node version | Pin `NODE_VERSION=22.22.3` (the local verification version), instead of relying on Render's default |
@@ -342,3 +342,6 @@ actual origin and rebuild the frontend because its rewrites are compiled at buil
   the supplied log's compile failures are dependency/generation failures, not proven Node 24 bugs.
 - The audit warnings in the deployment log are separate security work, not the cause of these
   TS2307 errors. Do not run `npm audit fix --force` blindly as part of this deployment repair.
+
+For the current compiled-only native startup, PORT precedence, Node pin and deployment evidence,
+see [Render API production startup](render-api-production.md). Never use `npm run dev` as a Render Start Command.

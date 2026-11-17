@@ -13,6 +13,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
 import { AppLogger, workerLogger } from './common/services/logger.service';
 import { env, loadEnv } from './common/env';
+import { listenForApi } from './common/http-listener';
 import { buildHelmetOptions } from './common/security-headers';
 
 let application: NestExpressApplication | undefined;
@@ -75,13 +76,13 @@ async function bootstrap() {
     }
   }
 
-  await app.listen(env.API_PORT, '0.0.0.0');
-  workerLogger.child({ port: env.API_PORT, env: env.NODE_ENV }).info('ClipForge API listening');
+  const port = await listenForApi(app, env);
+  workerLogger.child({ port, host: '0.0.0.0', env: env.NODE_ENV }).info('ClipForge API listening');
 }
 
 if (require.main === module) void bootstrap().catch(async (error: unknown) => {
   if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
-    console.error(`[fatal] API_PORT=${env.API_PORT} is already in use. Stop only the API instance you own, or inspect the listener PID before taking action. Do not run dev:api and start:api together. No process was killed and the port was not changed.`);
+    console.error(`[fatal] Port ${env.PORT ?? env.API_PORT} (PORT takes precedence over API_PORT) is already in use. Stop only the API instance you own, or inspect the listener PID before taking action. Do not run dev:api and start:api together. No process was killed and the port was not changed.`);
   }
   // Fail loudly: a misconfigured environment must never start a half-working API.
   console.error('[fatal] API failed to start:', error instanceof Error ? (error.stack ?? error.message) : error);

@@ -57,3 +57,7 @@ Rules for this directory:
 ## Local process lifecycle
 
 - [Reliable local API and frontend startup](local-startup.md) — Windows port ownership, single API workflow, proxy health and shutdown/recovery checks.
+
+## Native Render API production startup
+
+- [Compiled-only Render API deployment](render-api-production.md) — production command, PORT handling, Node pin, configuration, safe migrations and verification limits.

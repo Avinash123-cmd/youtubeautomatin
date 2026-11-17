@@ -18,7 +18,9 @@ export const envSchema = z.object({
     .string()
     .optional()
     .transform((value) => value === 'true' || value === '1'),
-  API_PORT: z.coerce.number().int().positive(),
+  // Render injects PORT; API_PORT remains the explicit local/Docker fallback.
+  PORT: z.coerce.number().int().min(1).max(65535).optional(),
+  API_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
   WORKER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(1000).max(300000).default(30000),
   HEALTHCHECK_TIMEOUT_MS: z.coerce.number().int().min(100).max(30000).default(5000),
   ALLOWED_ORIGINS: z.string().min(1),

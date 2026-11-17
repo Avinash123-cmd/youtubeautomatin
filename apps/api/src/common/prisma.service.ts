@@ -6,7 +6,8 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   readonly client = prisma;
 
   async onModuleInit(): Promise<void> {
-    await this.client.$connect();
+    try { await this.client.$connect(); }
+    catch (cause) { throw new Error('PostgreSQL initialization failed. Check DATABASE_URL, credentials, TLS and network access.', { cause }); }
   }
 
   async onModuleDestroy(): Promise<void> {

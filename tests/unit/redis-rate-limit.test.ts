@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-const client = vi.hoisted(() => ({ eval: vi.fn() }));
+const client = vi.hoisted(() => ({ eval: vi.fn(), on: vi.fn() }));
 vi.mock('ioredis', () => ({ default: vi.fn(function () { return client; }) }));
 vi.mock('../../apps/api/src/common/env', () => ({ env: { REDIS_URL: 'redis://test', REDIS_PREFIX: 'clipforge-test' } }));
 import { RedisService, RATE_LIMIT_SCRIPT } from '../../apps/api/src/common/services/redis.service';

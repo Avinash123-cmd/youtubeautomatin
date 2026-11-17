@@ -65,6 +65,34 @@ export const envSchema = z.object({
   VIDEO_PROCESSOR_URL: z.string().url(),
   VIDEO_PROCESSOR_API_KEY: z.string().min(8),
 
+  // ------------------------- YouTube source import -------------------------
+  // Pasting a YouTube URL is a real ingest path: the pipeline downloads the original media with
+  // yt-dlp, probes it with ffprobe and stores it like an upload. It is enabled by default because
+  // the operator still has to accept a rights declaration per source, but it can be switched off
+  // in one place for deployments that only allow their own footage.
+  YOUTUBE_IMPORT_ENABLED: bool.default('true'),
+  /** Absolute path or PATH-resolved binary name of yt-dlp. */
+  YTDLP_PATH: z.string().trim().min(1).default('yt-dlp'),
+  /** Highest downloaded rendition. 1080 keeps the vertical crop sharp without wasting bandwidth. */
+  YOUTUBE_IMPORT_MAX_HEIGHT: z.coerce.number().int().min(360).max(2160).default(1080),
+  YOUTUBE_IMPORT_TIMEOUT_SECONDS: z.coerce.number().int().min(60).max(7200).default(1800),
+  YOUTUBE_IMPORT_MAX_FILESIZE_MB: z.coerce.number().int().min(16).max(20000).default(2048),
+  /** Optional Netscape cookie file for videos that require an authenticated session. */
+  YOUTUBE_COOKIES_FILE: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().trim().optional(),
+  ),
+  /** Optional outbound proxy, e.g. http://user:pass@host:port. */
+  YOUTUBE_PROXY: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().url().optional(),
+  ),
+  /** ffmpeg location handed to yt-dlp when merging separate video/audio streams. */
+  YOUTUBE_YTDLP_FFMPEG_LOCATION: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().trim().optional(),
+  ),
+
   // ---------------------------- Firebase Auth ----------------------------
   // Legacy configuration retained for history. The active auth module does not register
   // Firebase/password controllers and these settings cannot enable alternate sign-in.

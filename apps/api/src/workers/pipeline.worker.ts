@@ -9,8 +9,9 @@ import { deferContendedJob, currentLeaseOwner, withLeaseScope } from './lease-co
  * expensive work silently.
  */
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
-import { prisma, transitionJob, transitionJobInTransaction, JobLeaseLostError, acquireJobLease, writeOutbox, releaseJobLease, appendAuditLog } from '@clipforge/database';
+import { mkdir, rm } from 'node:fs/promises';
+import { extname } from 'node:path';
+import { prisma, transitionJob, transitionJobInTransaction, updateJobProgress, JobLeaseLostError, acquireJobLease, writeOutbox, releaseJobLease, appendAuditLog } from '@clipforge/database';
 import { PIPELINE_STATES } from '@clipforge/shared-types';
 import type { Prisma } from '@prisma/client';
 import { env } from '../common/env';
@@ -20,10 +21,16 @@ import { StorageService } from '../storage/storage.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { createRuntime, createWorker, wireShutdown, startLeaseRenewal } from './base';
 import { aiEngine, videoProcessor, ServiceCallError } from './services-client';
+import { YoutubeImportService } from '../sources/youtube/youtube-import.service';
+import { ingestYouTubeSource } from '../sources/youtube/ingest';
+import { YoutubeIngestError } from '../sources/youtube/ytdlp';
+import { sourceObjectKey } from '../sources/source-key';
+import { PipelineAbortError } from './pipeline-errors';
 
 const runtime = createRuntime('ai', env.WORKER_CONCURRENCY_AI);
 const storage = new StorageService();
 const appConfig = new AppConfigService();
+const youtubeImport = new YoutubeImportService();
 const notifications = new NotificationsService();
 
 interface JobConfiguration {
@@ -95,14 +102,26 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         progressDetail: 'Inspecting source media with ffprobe',
         leaseSeconds: env.JOB_LEASE_SECONDS,
       });
-      if (!job.sourceVideo.storageKey) throw new Error('Source has no stored object');
-      await storage.downloadToFile(job.sourceVideo.storageKey, sourcePath);
+      // Two ways a source arrives here: already in storage (upload / direct URL), or as a pasted
+      // YouTube URL whose media has never been fetched. The second one is ingested now, inside the
+      // lease, so a crash resumes from storageKey instead of downloading twice.
+      if (!job.sourceVideo.storageKey) {
+        if (job.sourceVideo.kind !== 'YOUTUBE') {
+          throw new PipelineAbortError('SOURCE_NOT_STORED', 'Source has no stored object', { retryable: false });
+        }
+        await ingestYouTube(jobId, job.workspaceId, job.sourceVideo, workDir);
+        const stored = await prisma.sourceVideo.findUnique({ where: { id: job.sourceVideoId }, select: { storageKey: true } });
+        if (!stored?.storageKey) throw new PipelineAbortError('INGEST_NOT_STORED', 'YouTube ingest did not store the media', { retryable: true });
+        await storage.downloadToFile(stored.storageKey, sourcePath);
+      } else {
+        await storage.downloadToFile(job.sourceVideo.storageKey, sourcePath);
+      }
       void notifications.notify({
         workspaceId: job.workspaceId,
         category: 'SOURCE_DOWNLOADED',
         dedupeKey: `job:${jobId}:source-downloaded`,
-        summary: 'Source video downloaded to the worker',
-        details: [['Storage key', job.sourceVideo.storageKey]],
+        summary: 'Source video is on the worker',
+        details: [['Source', job.sourceVideo.originalFileName ?? job.sourceVideoId], ['Kind', job.sourceVideo.kind]],
         jobId,
       });
       const probe = await videoProcessor.probe(sourcePath);
@@ -527,10 +546,36 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
   } catch (error) {
     if (error instanceof JobLeaseLostError) throw error;
     const serviceError = error instanceof ServiceCallError ? error : null;
-    const retryable = serviceError ? serviceError.retryable : true;
+    const abort = error instanceof PipelineAbortError ? error : null;
+    const retryable = abort ? abort.options.retryable : serviceError ? serviceError.retryable : true;
     const message = error instanceof Error ? error.message : String(error);
     const attempt = job.attempt;
     const exhausted = !retryable || attempt >= job.maxAttempts;
+
+    // A missing binary or a disabled feature is not a failure of this job: park it where an
+    // operator will see exactly what to configure, and keep the retry budget intact.
+    if (abort?.options.needsConfiguration) {
+      void notifications.notify({
+        workspaceId: job.workspaceId,
+        category: 'WORKFLOW_FAILED',
+        dedupeKey: `job:${jobId}:needs-configuration`,
+        summary: 'Workflow paused: configuration required',
+        details: [
+          ['Code', abort.code],
+          ['What to fix', message.slice(0, 400)],
+        ],
+        jobId,
+      });
+      await transitionJob(jobId, 'NEEDS_CONFIGURATION', {
+        errorCode: abort.code,
+        errorMessage: message.slice(0, 1800),
+        errorDetails: { stage: job.stage, ...(abort.options.details ?? {}) } as Prisma.InputJsonValue,
+        progressDetail: `Configuration required: ${message}`.slice(0, 400),
+        workerId: currentLeaseOwner(runtime.workerId),
+        expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
+      });
+      return;
+    }
 
     // Two different facts, two different messages: a quota refusal is actionable by the operator
     // (top up, raise limits) while a permanent failure needs someone to look at the job.
@@ -564,7 +609,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       });
     }
     await transitionJob(jobId, exhausted ? 'FAILED' : 'RETRYING', {
-      errorCode: serviceError?.code ?? 'PIPELINE_ERROR',
+      errorCode: abort?.code ?? serviceError?.code ?? 'PIPELINE_ERROR',
       errorMessage: message.slice(0, 1800),
       errorDetails: { stage: job.stage, retryable, attempt } as Prisma.InputJsonValue,
       progressDetail: exhausted ? `Failed: ${message}`.slice(0, 400) : `Retrying: ${message}`.slice(0, 400),
@@ -600,6 +645,143 @@ async function ensureStatus(jobId: string, expected: string): Promise<void> {
     return;
   }
   await transitionJob(jobId, expected as never, { workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId), leaseSeconds: env.JOB_LEASE_SECONDS });
+}
+
+
+/**
+ * Downloads a pasted YouTube URL, probes it, enforces the workspace limits and stores it exactly
+ * like an upload would be stored. Progress is written to the job so the dashboard can show it.
+ */
+interface IngestSourceRow {
+  id: string;
+  workspaceId: string;
+  sourceUrl: string | null;
+  youTubeReferenceUrl: string | null;
+  youTubeReferenceId: string | null;
+  sourceMetadata: unknown;
+  originalFileName: string | null;
+}
+
+async function ingestYouTube(jobId: string, workspaceId: string, source: IngestSourceRow, workDir: string): Promise<void> {
+  let lastWrite = 0;
+  let lastPercent = -1;
+
+  // Still inside PROBING: a state transition here would be a self-transition and a no-op.
+  await updateJobProgress(jobId, {
+    expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
+    progressPercent: 5,
+    progressDetail: 'Downloading source from YouTube',
+    leaseSeconds: env.JOB_LEASE_SECONDS,
+  });
+
+  let ingested: Awaited<ReturnType<typeof ingestYouTubeSource>>;
+  try {
+    ingested = await ingestYouTubeSource({
+      source,
+      destinationBase: join(workDir, `youtube-${source.id}`),
+      service: youtubeImport,
+      onProgress: (percent, detail) => {
+        const now = Date.now();
+        // One write every 3s (or every 5 percentage points) instead of per progress line.
+        if (now - lastWrite < 3000 && percent - lastPercent < 5) return;
+        lastWrite = now;
+        lastPercent = percent;
+        void updateJobProgress(jobId, {
+          expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
+          progressPercent: Math.min(9, 4 + Math.round(percent / 20)),
+          progressDetail: detail,
+          leaseSeconds: env.JOB_LEASE_SECONDS,
+        }).catch(() => undefined);
+      },
+    });
+  } catch (error) {
+    if (error instanceof YoutubeIngestError) {
+      throw new PipelineAbortError(error.code, error.message, {
+        retryable: error.retryable,
+        needsConfiguration: error.needsConfiguration,
+      });
+    }
+    throw error;
+  }
+
+  const liveConfig = await appConfig.resolveForProcessing(workspaceId);
+  const probe = await videoProcessor.probe(ingested.path);
+  if (!Number.isFinite(probe.duration_seconds) || probe.duration_seconds <= 0) {
+    throw new PipelineAbortError('INGEST_UNREADABLE_MEDIA', 'The downloaded file has no readable duration', { retryable: false });
+  }
+  if (probe.duration_seconds > liveConfig.maxDurationSeconds) {
+    await prisma.sourceVideo.update({
+      where: { id: source.id },
+      data: { status: 'REJECTED', rejectionReason: `Source is ${Math.round(probe.duration_seconds)}s, above the configured maximum of ${liveConfig.maxDurationSeconds}s` },
+    });
+    throw new PipelineAbortError(
+      'SOURCE_TOO_LONG',
+      `Source is ${Math.round(probe.duration_seconds)}s but the workspace maximum is ${liveConfig.maxDurationSeconds}s`,
+      { retryable: false },
+    );
+  }
+  if (ingested.sizeBytes > liveConfig.maxFileSizeBytes) {
+    await prisma.sourceVideo.update({
+      where: { id: source.id },
+      data: { status: 'REJECTED', rejectionReason: `Source is ${ingested.sizeBytes} bytes, above the configured maximum of ${liveConfig.maxFileSizeBytes} bytes` },
+    });
+    throw new PipelineAbortError(
+      'SOURCE_TOO_LARGE',
+      `Source is ${(ingested.sizeBytes / 1024 / 1024).toFixed(1)} MB but the workspace maximum is ${(liveConfig.maxFileSizeBytes / 1024 / 1024).toFixed(1)} MB`,
+      { retryable: false },
+    );
+  }
+
+  // The container is whatever yt-dlp actually produced (usually mp4 after merging, but a
+  // single-stream source can stay webm). The stored object must not claim a container it is not.
+  const extension = extname(ingested.path).toLowerCase();
+  const contentType = extension === '.webm' ? 'video/webm' : extension === '.mkv' ? 'video/x-matroska' : extension === '.mov' ? 'video/quicktime' : 'video/mp4';
+  const key = sourceObjectKey(workspaceId, source.id, `source${extension || '.mp4'}`);
+  await storage.putFile(key, ingested.path, contentType);
+  // The download is no longer needed: PROBING re-materialises the stored object under a stable
+  // name for the transcription stage, so keeping both would double the work-disk usage.
+  await rm(ingested.path, { force: true });
+  const previousMetadata = (source.sourceMetadata as Record<string, unknown> | null) ?? {};
+  await prisma.sourceVideo.update({
+    where: { id: source.id },
+    data: {
+      status: 'VALIDATED',
+      storageKey: key,
+      sizeBytes: BigInt(ingested.sizeBytes),
+      detectedMimeType: contentType,
+      durationSeconds: probe.duration_seconds,
+      width: probe.width,
+      height: probe.height,
+      frameRate: probe.frame_rate,
+      probeResult: probe as unknown as Prisma.InputJsonValue,
+      ingestedAt: new Date(),
+      sourceMetadata: {
+        ...previousMetadata,
+        ingestedAt: new Date().toISOString(),
+        title: ingested.info?.title ?? previousMetadata.title ?? null,
+        author: ingested.info?.uploader ?? previousMetadata.author ?? null,
+        durationSeconds: probe.duration_seconds,
+        width: probe.width,
+        height: probe.height,
+        frameRate: probe.frame_rate,
+        sizeBytes: ingested.sizeBytes,
+        thumbnailUrl: ingested.info?.thumbnailUrl ?? previousMetadata.thumbnailUrl ?? null,
+      } as Prisma.InputJsonValue,
+    },
+  });
+  void notifications.notify({
+    workspaceId,
+    category: 'SOURCE_DETECTED',
+    dedupeKey: `job:${jobId}:youtube-ingested`,
+    summary: 'YouTube source downloaded and validated',
+    details: [
+      ['Video', ingested.info?.title ?? source.originalFileName ?? source.id],
+      ['Duration', `${(probe.duration_seconds / 60).toFixed(1)} min`],
+      ['Resolution', `${probe.width}×${probe.height}`],
+      ['Size', `${(ingested.sizeBytes / 1024 / 1024).toFixed(1)} MB`],
+    ],
+    jobId,
+  });
 }
 
 async function main() {

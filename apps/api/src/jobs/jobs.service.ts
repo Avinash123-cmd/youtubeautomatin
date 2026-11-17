@@ -12,6 +12,7 @@ import { PIPELINE_STATES, type JobState } from '@clipforge/shared-types';
 
 // Concrete pipeline stages a retry may resume from (the array type is the full union).
 const PIPELINE_STAGES: readonly JobState[] = PIPELINE_STATES;
+import { env } from '../common/env';
 import { AppConfigService } from '../common/services/config.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import type { RequestContext } from '../common/guards/session-auth.guard';
@@ -31,8 +32,18 @@ export class JobsService {
       include: { jobs: { where: { status: { notIn: ['FAILED', 'CANCELLED', 'COMPLETED', 'PARTIALLY_COMPLETED'] } } } },
     });
     if (!source) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Source video not found' });
-    if (source.status !== 'VALIDATED') {
+    // A pasted YouTube URL has no bytes yet: the pipeline's PROBING stage downloads, probes and
+    // validates it before any analysis. Everything else must already be validated.
+    const pendingIngest = source.kind === 'YOUTUBE' && source.status === 'INITIATED';
+    if (source.status !== 'VALIDATED' && !pendingIngest) {
       throw new BadRequestException({ code: 'VALIDATION_FAILED', message: `Source is ${source.status}; wait until validation completes` });
+    }
+    if (pendingIngest && !env.YOUTUBE_IMPORT_ENABLED) {
+      throw new BadRequestException({
+        code: 'CONFIGURATION_REQUIRED',
+        message: 'YouTube import is disabled for this deployment (YOUTUBE_IMPORT_ENABLED=false).',
+        details: { missingConfiguration: ['YOUTUBE_IMPORT_ENABLED'] },
+      });
     }
     if (!source.rightsDeclaration) {
       throw new BadRequestException({ code: 'RIGHTS_NOT_DECLARED', message: 'A rights declaration is required before processing' });
@@ -78,7 +89,14 @@ export class JobsService {
     const job = await prisma.$transaction(async (tx) => {
       // Preflight checks above improve errors, but only a lock/recheck prevents concurrent creates.
       await tx.$queryRaw`SELECT id FROM "SourceVideo" WHERE id = ${source.id}::uuid FOR UPDATE`;
-      const currentSource = await tx.sourceVideo.findFirst({ where: { id: source.id, workspaceId: ctx.workspaceId, deletedAt: null, status: 'VALIDATED' } });
+      const currentSource = await tx.sourceVideo.findFirst({
+        where: {
+          id: source.id,
+          workspaceId: ctx.workspaceId,
+          deletedAt: null,
+          OR: [{ status: 'VALIDATED' }, { status: 'INITIATED', kind: 'YOUTUBE' }],
+        },
+      });
       if (!currentSource) throw new ConflictException({ code: 'CONFLICT', message: 'Source is no longer available for processing' });
       const concurrentJob = await tx.processingJob.findFirst({ where: { sourceVideoId: source.id, workspaceId: ctx.workspaceId, status: { notIn: ['FAILED', 'CANCELLED', 'COMPLETED', 'PARTIALLY_COMPLETED'] } } });
       if (concurrentJob) throw new ConflictException({ code: 'CONFLICT', message: 'Source already has an active job' });

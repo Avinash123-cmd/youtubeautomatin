@@ -116,6 +116,18 @@ export const importUrlSchema = z.object({
   }),
 });
 
+export const youtubeInspectSchema = z.object({
+  url: z.string().trim().url().max(2048).refine(isYouTubeUrl, 'Must be a valid YouTube video URL'),
+});
+
+export const youtubeSourceSchema = z.object({
+  url: z.string().trim().url().max(2048).refine(isYouTubeUrl, 'Must be a valid YouTube video URL'),
+  rightsDeclaration: z.object({
+    accepted: z.literal(true),
+    statement: z.string().trim().min(20).max(2000),
+  }),
+});
+
 // ------------------------------- processing -------------------------------
 
 export const createJobSchema = z.object({

@@ -8,6 +8,8 @@ import {
   importUrlSchema,
   initiateUploadSchema,
   sourceListQuerySchema,
+  youtubeInspectSchema,
+  youtubeSourceSchema,
 } from '@clipforge/validation';
 import { CurrentContext } from '../common/decorators/auth.decorators';
 import type { RequestContext } from '../common/guards/session-auth.guard';
@@ -23,10 +25,23 @@ export class SourcesController {
   constructor(private readonly sources: SourcesService, private readonly prisma: PrismaService) {}
 
   @Post('youtube/inspect')
-  @RateLimit({ limit: 10, windowSeconds: 60, scope: 'source-youtube-inspect' })
-  @ApiOperation({ summary: 'Look up official YouTube metadata without downloading media or scraping captions' })
+  @RateLimit({ limit: 20, windowSeconds: 60, scope: 'source-youtube-inspect' })
+  @ApiOperation({ summary: 'Preview a pasted YouTube URL (oEmbed / Data API). No media is downloaded here.' })
   inspectYouTube(@Body() body: unknown, @CurrentContext() _ctx: RequestContext) {
-    return this.sources.inspectYouTube(z.object({ url: z.string().url().max(2048) }).parse(body).url);
+    return this.sources.inspectYouTube(youtubeInspectSchema.parse(body).url);
+  }
+
+  @Get('youtube/status')
+  @ApiOperation({ summary: 'Report whether YouTube URL import is enabled and yt-dlp is available' })
+  youtubeStatus() {
+    return this.sources.youtubeStatus();
+  }
+
+  @Post('youtube')
+  @RateLimit({ limit: 10, windowSeconds: 60, scope: 'source-youtube-create' })
+  @ApiOperation({ summary: 'Record a pasted YouTube URL as a source; the pipeline ingests the media' })
+  createYouTube(@Body() body: unknown, @CurrentContext() ctx: RequestContext) {
+    return this.sources.createYouTubeSource(youtubeSourceSchema.parse(body), ctx);
   }
 
   @Post('upload/initiate')

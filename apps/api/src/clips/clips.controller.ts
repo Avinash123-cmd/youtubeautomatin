@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { clipListQuerySchema, updateClipMetadataSchema } from '@clipforge/validation';
 import { CurrentContext } from '../common/decorators/auth.decorators';
@@ -30,6 +31,22 @@ export class ClipsController {
   @Get(':id/download')
   download(@Param('id', new ParseUUIDPipe({ errorHttpStatusCode: 404 })) id: string, @CurrentContext() ctx: RequestContext) {
     return this.clips.registerDownload(id, ctx);
+  }
+
+  @Get(':id/captions')
+  @ApiOperation({ summary: 'Download the clip captions as SRT (default), VTT or plain text' })
+  async captions(
+    @Param('id', new ParseUUIDPipe({ errorHttpStatusCode: 404 })) id: string,
+    @Query('format') format: string | undefined,
+    @CurrentContext() ctx: RequestContext,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const requested = format === 'vtt' || format === 'txt' ? format : 'srt';
+    const file = await this.clips.captions(id, ctx, requested);
+    response.setHeader('content-type', file.contentType);
+    // The filename is derived server-side from a sanitised title, so it is safe in the header.
+    response.setHeader('content-disposition', `attachment; filename="${file.filename}"`);
+    return file.body;
   }
 
   @Patch(':id/metadata')

@@ -11,7 +11,8 @@ src/
 ├── app.module.ts           module registry + global guards (rate limit → session → CSRF)
 ├── auth/                   login, logout, sessions, CSRF issuing, Argon2id hashing
 ├── jobs/                   processing jobs: create, list, cancel, retry, stage timeline
-├── sources/                chunked upload (initiate/part/complete), URL import with SSRF guard
+├── sources/                chunked upload, direct-URL import (SSRF-guarded), YouTube URL ingest
+│   └── youtube/            yt-dlp runner, oEmbed preview, source creation and download
 ├── clips/                  clip list/detail, per-platform metadata, download registration
 ├── publishing/             enable/disable auto-publish, publish jobs, history, retry
 ├── accounts/               OAuth connect/callback/verify/disconnect (tokens encrypted at rest)

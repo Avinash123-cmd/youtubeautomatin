@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { prisma, appendAuditLog } from '@clipforge/database';
-import { parseYouTubeVideoId, isYouTubeUrl } from '@clipforge/validation';
+import { parseYouTubeVideoId, isYouTubeUrl, normalizeYouTubeUrl } from '@clipforge/validation';
 import type { ImportUrlInput, InitiateUploadInput, SourceListQuery } from '@clipforge/validation';
 import type { Prisma } from '@prisma/client';
 import { env } from '../common/env';
@@ -15,6 +15,9 @@ import { MediaValidationService } from '../media/media-validation.service';
 import { downloadUrlToFile } from '../media/ssrf-guard';
 import { StorageService } from '../storage/storage.service';
 import type { RequestContext } from '../common/guards/session-auth.guard';
+import { sourceObjectKey } from './source-key';
+import { toSourceDto } from './source-dto';
+import { YoutubeImportService } from './youtube/youtube-import.service';
 
 /** Declared to the browser at upload initiation; the browser is not allowed to pick its own. */
 const PART_SIZE_BYTES = env.UPLOAD_PART_SIZE_MIB * 1024 * 1024;
@@ -37,13 +40,45 @@ export class SourcesService {
     private readonly storage: StorageService,
     private readonly media: MediaValidationService,
     private readonly config: AppConfigService,
+    private readonly youtube: YoutubeImportService,
   ) {}
 
-  /** Official metadata lookup only. A watch URL is never a media download grant. */
+  /**
+   * Preview a pasted URL.
+   *
+   * With YOUTUBE_DATA_API_KEY the official Data API is used (tested contract, unchanged). Without a
+   * key the same preview is resolved through YouTube's public oEmbed endpoint, so the "paste a URL"
+   * flow works before any Google Cloud project exists. Neither path downloads media; that is the
+   * pipeline's ingest step, and it is reported separately.
+   */
   async inspectYouTube(url: string) {
-    const videoId = parseYouTubeVideoId(url);
-    if (!videoId) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Provide a valid HTTPS YouTube video URL' });
-    if (!env.YOUTUBE_DATA_API_KEY) throw new ServiceUnavailableException({ code: 'CONFIGURATION_REQUIRED', message: 'YouTube metadata lookup requires YOUTUBE_DATA_API_KEY. Upload the authorized original media to continue.' });
+    const normalized = normalizeYouTubeUrl(url);
+    if (!normalized) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Provide a valid HTTPS YouTube video URL' });
+    const videoId = normalized.videoId;
+    const downloadAvailable = Boolean(env.YOUTUBE_IMPORT_ENABLED);
+
+    if (!env.YOUTUBE_DATA_API_KEY) {
+      const preview = await this.youtube.preview(normalized.canonicalUrl);
+      return {
+        videoId,
+        availability: preview.available ? 'AVAILABLE' : 'UNAVAILABLE_OR_PRIVATE',
+        metadata: preview.available
+          ? {
+              snippet: { title: preview.title, description: '', channelTitle: preview.author ?? 'Unknown channel' },
+              thumbnailUrl: preview.thumbnailUrl,
+              embedUrl: preview.embedUrl,
+              durationSeconds: preview.durationSeconds,
+              canonicalUrl: preview.canonicalUrl,
+            }
+          : null,
+        originalMedia: downloadAvailable ? 'AUTO_IMPORT' : 'UPLOAD_REQUIRED',
+        transcript: 'NOT_RETRIEVED',
+        message: downloadAvailable
+          ? 'Pasting this URL queues a real download in the pipeline. Confirm you own or are authorised to reuse the video before generating clips.'
+          : 'YouTube import is disabled for this deployment. Upload your original video or import an authorized direct media URL; speech is transcribed from that media.',
+      };
+    }
+
     let response: Response;
     try {
       response = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status&id=${videoId}`, {
@@ -61,14 +96,31 @@ export class SourcesService {
     const video = payload.items.find(item => item.id === videoId);
     return {
       videoId, availability: video ? 'AVAILABLE' : 'UNAVAILABLE_OR_PRIVATE', metadata: video ?? null,
-      originalMedia: 'UPLOAD_REQUIRED', transcript: 'NOT_RETRIEVED',
-      message: 'Metadata and caption availability do not grant media or transcript access. Upload your original video or import an authorized direct media URL; speech is transcribed from that media.',
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      canonicalUrl: normalized.canonicalUrl,
+      originalMedia: downloadAvailable ? 'AUTO_IMPORT' : 'UPLOAD_REQUIRED', transcript: 'NOT_RETRIEVED',
+      message: downloadAvailable
+        ? 'Pasting this URL queues a real download in the pipeline. Confirm you own or are authorised to reuse the video before generating clips.'
+        : 'Metadata and caption availability do not grant media or transcript access. Upload your original video or import an authorized direct media URL; speech is transcribed from that media.',
     };
   }
 
+  /** Whether this deployment can ingest YouTube URLs right now (used by the dashboard). */
+  youtubeStatus() {
+    return this.youtube.status();
+  }
+
+  /** Records a pasted YouTube URL as a source; the pipeline downloads it during PROBING. */
+  async createYouTubeSource(
+    input: { url: string; rightsDeclaration: { accepted: true; statement: string } },
+    ctx: RequestContext,
+  ) {
+    const source = await this.youtube.createSource(input, ctx);
+    return toSourceDto(source);
+  }
+
   private sourceKey(workspaceId: string, sourceId: string, fileName: string): string {
-    const ext = (fileName.match(/\.[A-Za-z0-9]{1,6}$/)?.[0] ?? '.mp4').toLowerCase();
-    return `ws/${workspaceId}/sources/${sourceId}/original${ext}`;
+    return sourceObjectKey(workspaceId, sourceId, fileName);
   }
 
   private stagingPath(sourceId: string): string {
@@ -443,40 +495,7 @@ export class SourcesService {
     }
   }
 
-  private toDto(source: {
-    id: string;
-    kind: string;
-    status: string;
-    originalFileName: string | null;
-    sizeBytes: bigint | null;
-    durationSeconds: number | null;
-    width: number | null;
-    height: number | null;
-    frameRate: number | null;
-    youTubeReferenceUrl: string | null;
-    sourceUrl: string | null;
-    rejectionReason: string | null;
-    storageKey: string | null;
-    probeResult: unknown;
-    createdAt: Date;
-  }) {
-    return {
-      id: source.id,
-      kind: source.kind,
-      status: source.status,
-      originalFileName: source.originalFileName,
-      sizeBytes: source.sizeBytes ? Number(source.sizeBytes) : null,
-      durationSeconds: source.durationSeconds,
-      width: source.width,
-      height: source.height,
-      frameRate: source.frameRate,
-      youTubeReferenceUrl: source.youTubeReferenceUrl,
-      sourceUrl: source.sourceUrl,
-      rejectionReason: source.rejectionReason,
-      // Never expose the raw storage key; hand out a media URL when one exists.
-      mediaUrl: source.storageKey ? `/media/sources/${source.id}` : null,
-      probe: source.probeResult,
-      createdAt: source.createdAt.toISOString(),
-    };
+  private toDto(source: Parameters<typeof toSourceDto>[0]) {
+    return toSourceDto(source);
   }
 }

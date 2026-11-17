@@ -52,14 +52,14 @@ export function BackendDown({ message, onRetry }: { message: string; onRetry?: (
         <Card className="px-5 py-5">
           <h1 className="text-[19px] font-semibold tracking-tight text-ink">This dashboard cannot reach its API</h1>
           <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">
-            The page loaded, so the Vercel deployment is fine — but every request is proxied to the API
-            origin that was baked into the build. That origin did not answer.
+            The page loaded, but API requests are proxied to the backend
+            origin configured when Next started or was built. That origin did not answer. We retry while it is unavailable.
           </p>
 
           <pre className="mt-3 overflow-x-auto rounded-lg bg-surface-sunken px-3 py-2 text-xs text-ink-soft">{message}</pre>
 
           <div className="mt-4 space-y-2 text-[13px] text-ink-soft">
-            <p className="font-medium text-ink">Check, in this order</p>
+            <p className="font-medium text-ink">Check, in this order (local development: run exactly one npm run dev:api and check API_PORT)</p>
             <ol className="list-decimal space-y-1 pl-5">
               <li>
                 The API is running and <code className="rounded bg-surface-sunken px-1">GET /api/system/health</code> returns

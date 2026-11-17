@@ -4,6 +4,8 @@ import { Module, type INestApplication } from '@nestjs/common';
 import { NestFactory, Reflector } from '@nestjs/core';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
+import { SystemController } from '../../apps/api/src/system/system.controller';
+import { SystemService } from '../../apps/api/src/system/system.service';
 import { BotAuthController } from '../../apps/api/src/auth/bot-auth.controller';
 import { BotSecurityController } from '../../apps/api/src/auth/bot-security.controller';
 import { SessionService } from '../../apps/api/src/auth/session.service';
@@ -17,10 +19,12 @@ import { AllExceptionsFilter } from '../../apps/api/src/common/filters/all-excep
 import { AuthModule } from '../../apps/api/src/auth/auth.module';
 const env = vi.hoisted(() => ({ NODE_ENV: 'test', LOG_LEVEL: 'silent', SESSION_SECRET: 'test-only-32-character-session-secret', TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret', TELEGRAM_BOT_USERNAME: 'ClipForgeBot', TELEGRAM_BOT_TOKEN: 'test-token', TELEGRAM_LOGIN_CHALLENGE_TTL_SECONDS: 300 }));
 vi.mock('../../apps/api/src/common/env', () => ({ env }));
+// Vitest/esbuild omits constructor metadata; production tsc emits it.
+Reflect.defineMetadata('design:paramtypes', [SystemService], SystemController);
 const approve = vi.fn();
 const create = vi.fn().mockResolvedValue({ browser: 'b'.repeat(43), deepLink: `https://t.me/ClipForgeBot?start=login_${'t'.repeat(43)}`, expiresAt: new Date(Date.now() + 300000).toISOString() });
 const accounts = { handleUpdate: vi.fn() };
-@Module({ controllers: [BotAuthController], providers: [SessionService, { provide: TelegramBotLoginService, useValue: { approve, create, status: (verifier?: string) => new TelegramBotLoginService(new SessionService()).status(verifier) } }, { provide: TelegramAccountService, useValue: accounts }] })
+@Module({ controllers: [BotAuthController, SystemController], providers: [{ provide: SystemService, useValue: { health: async () => ({ status: 'ok', checks: [{ component: 'db', status: 'healthy' }, { component: 'redis', status: 'healthy' }] }) } }, SessionService, { provide: TelegramBotLoginService, useValue: { approve, create, status: (verifier?: string) => new TelegramBotLoginService(new SessionService()).status(verifier) } }, { provide: TelegramAccountService, useValue: accounts }] })
 class HttpModule {}
 let app: INestApplication;
 beforeAll(async () => {
@@ -35,6 +39,21 @@ beforeAll(async () => {
 afterAll(async () => { await app?.close(); });
 const update = (overrides = {}) => ({ update_id: 1, message: { text: `/start login_${'a'.repeat(43)}`, from: { id: 12345, is_bot: false }, chat: { id: 12345, type: 'private' }, ...overrides } });
 describe('active bot-only HTTP boundary (isolated providers, not live Telegram)', () => {
+  it('rejects an occupied port without stopping the existing listener', async () => {
+    const { createServer } = await import('node:net');
+    const owner = createServer();
+    await new Promise<void>(resolve => owner.listen(0, '0.0.0.0', resolve));
+    const address = owner.address();
+    const duplicate = await NestFactory.create(HttpModule, { logger: false });
+    try {
+      if (!address || typeof address === 'string') throw new Error('No test listener');
+      await expect(duplicate.listen(address.port, '0.0.0.0')).rejects.toMatchObject({ code: 'EADDRINUSE' });
+      expect(owner.listening).toBe(true);
+    } finally {
+      await duplicate.close();
+      await new Promise<void>(resolve => owner.close(() => resolve()));
+    }
+  });
   it('registers only bot controllers in the production auth module', () => {
     expect(Reflect.getMetadata('controllers', AuthModule)).toEqual([BotAuthController, BotSecurityController]);
   });
@@ -121,4 +140,24 @@ describe('active bot-only HTTP boundary (isolated providers, not live Telegram)'
     expect(await session.json()).toMatchObject({ authenticated: false });
     expect((await fetch('http://localhost:3000/api/auth/telegram/webhook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(update()) })).status).toBe(403);
   });
+  it.runIf(Boolean(process.env.BOT_PROXY_TEST))('reports stopped API via Next and recovers after rebinding the same port', async () => {
+    const live = await fetch('http://localhost:3000/api/system/live');
+    expect(await live.json()).toEqual({ status: 'ok', service: 'clipforge-api' });
+    expect((await fetch('http://localhost:3000/healthz')).status).toBe(200);
+    const server = app.getHttpServer();
+    await new Promise<void>((resolve, reject) => { server.close((error?: Error) => error ? reject(error) : resolve()); server.closeAllConnections(); });
+    try {
+      const down = await fetch('http://localhost:3000/healthz');
+      expect(down.status).toBe(503);
+      expect((await down.json()).hint).toContain('Local backend unavailable');
+      expect((await fetch('http://localhost:3000/api/auth/session')).ok).toBe(false);
+    } finally {
+      await new Promise<void>(resolve => server.listen(4000, '0.0.0.0', resolve));
+    }
+    expect((await fetch('http://localhost:3000/healthz')).status).toBe(200);
+    const session = await fetch('http://localhost:3000/api/auth/session');
+    expect(session.status).toBe(200);
+    expect((await session.json()).authenticated).toBe(false);
+  });
+
 });

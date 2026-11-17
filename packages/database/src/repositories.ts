@@ -52,7 +52,13 @@ export async function createProcessingJob(input: CreateJobInput) {
   });
 }
 
+export class JobLeaseLostError extends Error {
+  readonly code = 'JOB_LEASE_LOST';
+  constructor() { super('Processing job lease expired or ownership changed; stale worker cannot advance state'); }
+}
+
 export interface TransitionOptions {
+  expectedLeaseOwner?: string;
   progressPercent?: number;
   progressDetail?: string | null;
   workerId?: string | null;
@@ -60,7 +66,7 @@ export interface TransitionOptions {
   errorMessage?: string | null;
   errorDetails?: Prisma.InputJsonValue | null;
   resultSummary?: Prisma.InputJsonValue | null;
-  enqueue?: { queue: string; eventType: string; payload: Record<string, unknown> };
+  enqueue?: { queue: string; eventType: string; payload: Record<string, unknown>; availableAt?: Date };
   leaseSeconds?: number;
 }
 
@@ -70,99 +76,111 @@ export interface TransitionOptions {
  * all in one transaction.
  */
 export async function transitionJob(jobId: string, to: JobState, options: TransitionOptions = {}) {
-  return prisma.$transaction(async (tx) => {
-    const job = await tx.processingJob.findUnique({ where: { id: jobId } });
-    if (!job) throw new Error(`Job ${jobId} not found`);
-    const from = job.status as JobState;
-    if (from === to) {
-      return job;
-    }
-    if (!canTransition(from, to)) throw new IllegalTransitionError(from, to);
+  return prisma.$transaction(tx => transitionJobInTransaction(tx, jobId, to, options));
+}
 
-    const now = new Date();
-    const terminal = isTerminal(to);
-    const leaseExpiresAt = options.leaseSeconds
-      ? new Date(now.getTime() + options.leaseSeconds * 1000)
-      : terminal
-        ? null
-        : job.leaseExpiresAt;
+/** Serialize state transitions with lease claims/cancellation on the same PostgreSQL row.
+ * Recovery can compose a transition and its outbox intents in one existing transaction.
+ */
+export async function transitionJobInTransaction(tx: Prisma.TransactionClient, jobId: string, to: JobState, options: TransitionOptions = {}) {
+  await tx.$queryRaw`SELECT "id" FROM "ProcessingJob" WHERE "id" = ${jobId}::uuid FOR UPDATE`;
+  const job = await tx.processingJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error(`Job ${jobId} not found`);
+  if (options.expectedLeaseOwner !== undefined &&
+      (job.workerId !== options.expectedLeaseOwner || !job.leaseExpiresAt || job.leaseExpiresAt.getTime() <= Date.now())) {
+    throw new JobLeaseLostError();
+  }
+  const from = job.status as JobState;
+  if (from === to) {
+    return job;
+  }
+  if (!canTransition(from, to)) throw new IllegalTransitionError(from, to);
 
-    const updated = await tx.processingJob.update({
-      where: { id: jobId },
-      data: {
-        status: to,
-        stage: to,
-        // One RETRYING transition == one consumed retry attempt.
-        ...(to === 'RETRYING' ? { attempt: { increment: 1 } } : {}),
-        ...(options.progressPercent !== undefined ? { progressPercent: options.progressPercent } : {}),
-        ...(options.progressDetail !== undefined ? { progressDetail: options.progressDetail } : {}),
-        ...(options.workerId !== undefined ? { workerId: options.workerId } : {}),
-        ...(options.errorCode !== undefined ? { errorCode: options.errorCode } : {}),
-        ...(options.errorMessage !== undefined ? { errorMessage: options.errorMessage } : {}),
-        ...(options.errorDetails ? { errorDetails: options.errorDetails } : {}),
-        ...(options.resultSummary ? { resultSummary: options.resultSummary } : {}),
-        leaseExpiresAt,
-        heartbeatAt: terminal ? job.heartbeatAt : now,
-        startedAt: job.startedAt ?? now,
-        completedAt: terminal ? now : null,
-      },
-    });
+  const now = new Date();
+  const terminal = isTerminal(to);
+  const leaseExpiresAt = options.leaseSeconds
+    ? new Date(now.getTime() + options.leaseSeconds * 1000)
+    : terminal
+      ? null
+      : job.leaseExpiresAt;
 
-    // Close out stages that were still in flight. Without this every stage a job passed through
-    // stayed RUNNING forever, so the timeline (and any operator looking at it) was misleading.
-    await tx.jobStage.updateMany({
-      where: { jobId, stage: { not: to }, status: 'RUNNING' },
-      data: {
-        status: to === 'FAILED' || (options.errorCode && to === 'RETRYING') ? 'FAILED' : 'SUCCEEDED',
-        finishedAt: now,
-      },
-    });
-
-    await tx.jobStage.upsert({
-      where: { jobId_stage: { jobId, stage: to } },
-      update: {
-        status: terminal || to === 'RETRYING' ? 'SUCCEEDED' : 'RUNNING',
-        startedAt: now,
-        finishedAt: terminal ? now : null,
-        progressPercent: options.progressPercent ?? 0,
-        ...(options.errorCode ? { errorCode: options.errorCode, errorMessage: options.errorMessage ?? null } : {}),
-        workerId: options.workerId ?? null,
-      },
-      create: {
-        jobId,
-        stage: to,
-        status: terminal ? 'SUCCEEDED' : 'RUNNING',
-        startedAt: now,
-        finishedAt: terminal ? now : null,
-        progressPercent: options.progressPercent ?? 0,
-        workerId: options.workerId ?? null,
-        ...(options.errorCode ? { errorCode: options.errorCode, errorMessage: options.errorMessage ?? null } : {}),
-      },
-    });
-
-    // A stage row records when it started and when it finished but never how long it took, so the
-    // timeline showed "—" for every stage. Prisma cannot compute a duration in an update, so this
-    // derives it from the two timestamps it already stores.
-    await tx.$executeRaw`
-      UPDATE "JobStage"
-         SET "durationMs" = GREATEST(0, ROUND(EXTRACT(EPOCH FROM ("finishedAt" - "startedAt")) * 1000))::int
-       WHERE "jobId" = ${jobId}::uuid
-         AND "durationMs" IS NULL
-         AND "startedAt" IS NOT NULL
-         AND "finishedAt" IS NOT NULL
-    `;
-
-    if (options.enqueue) {
-      await writeOutbox(tx, {
-        aggregateType: 'ProcessingJob',
-        aggregateId: jobId,
-        eventType: options.enqueue.eventType,
-        queue: options.enqueue.queue,
-        payload: options.enqueue.payload,
-      });
-    }
-    return updated;
+  const updated = await tx.processingJob.update({
+    where: { id: jobId },
+    data: {
+      status: to,
+      stage: to,
+      // One RETRYING transition == one consumed retry attempt.
+      ...(to === 'RETRYING' ? { attempt: { increment: 1 } } : {}),
+      ...(options.progressPercent !== undefined ? { progressPercent: options.progressPercent } : {}),
+      ...(options.progressDetail !== undefined ? { progressDetail: options.progressDetail } : {}),
+      ...(options.workerId !== undefined ? { workerId: options.workerId } : {}),
+      ...(options.errorCode !== undefined ? { errorCode: options.errorCode } : {}),
+      ...(options.errorMessage !== undefined ? { errorMessage: options.errorMessage } : {}),
+      ...(options.errorDetails ? { errorDetails: options.errorDetails } : {}),
+      ...(options.resultSummary ? { resultSummary: options.resultSummary } : {}),
+      leaseExpiresAt,
+      ...(terminal ? { workerId: null } : {}),
+      heartbeatAt: terminal ? job.heartbeatAt : now,
+      startedAt: job.startedAt ?? now,
+      completedAt: terminal ? now : null,
+    },
   });
+
+  // Close out stages that were still in flight. Without this every stage a job passed through
+  // stayed RUNNING forever, so the timeline (and any operator looking at it) was misleading.
+  await tx.jobStage.updateMany({
+    where: { jobId, stage: { not: to }, status: 'RUNNING' },
+    data: {
+      status: to === 'CANCELLED' ? 'CANCELLED' : to === 'FAILED' || (options.errorCode && to === 'RETRYING') ? 'FAILED' : 'SUCCEEDED',
+      finishedAt: now,
+    },
+  });
+
+  await tx.jobStage.upsert({
+    where: { jobId_stage: { jobId, stage: to } },
+    update: {
+      status: to === 'CANCELLED' ? 'CANCELLED' : to === 'FAILED' ? 'FAILED' : terminal || to === 'RETRYING' ? 'SUCCEEDED' : 'RUNNING',
+      startedAt: now,
+      finishedAt: terminal || to === 'RETRYING' ? now : null,
+      progressPercent: options.progressPercent ?? 0,
+      ...(options.errorCode ? { errorCode: options.errorCode, errorMessage: options.errorMessage ?? null } : {}),
+      workerId: options.workerId ?? null,
+    },
+    create: {
+      jobId,
+      stage: to,
+      status: to === 'CANCELLED' ? 'CANCELLED' : to === 'FAILED' ? 'FAILED' : terminal || to === 'RETRYING' ? 'SUCCEEDED' : 'RUNNING',
+      startedAt: now,
+      finishedAt: terminal || to === 'RETRYING' ? now : null,
+      progressPercent: options.progressPercent ?? 0,
+      workerId: options.workerId ?? null,
+      ...(options.errorCode ? { errorCode: options.errorCode, errorMessage: options.errorMessage ?? null } : {}),
+    },
+  });
+
+  // A stage row records when it started and when it finished but never how long it took, so the
+  // timeline showed "—" for every stage. Prisma cannot compute a duration in an update, so this
+  // derives it from the two timestamps it already stores.
+  await tx.$executeRaw`
+    UPDATE "JobStage"
+       SET "durationMs" = GREATEST(0, ROUND(EXTRACT(EPOCH FROM ("finishedAt" - "startedAt")) * 1000))::int
+     WHERE "jobId" = ${jobId}::uuid
+       AND "durationMs" IS NULL
+       AND "startedAt" IS NOT NULL
+       AND "finishedAt" IS NOT NULL
+  `;
+
+  if (options.enqueue) {
+    await writeOutbox(tx, {
+      aggregateType: 'ProcessingJob',
+      aggregateId: jobId,
+      eventType: options.enqueue.eventType,
+      queue: options.enqueue.queue,
+      payload: options.enqueue.payload,
+      availableAt: options.enqueue.availableAt,
+    });
+  }
+  return updated;
 }
 
 /** Worker lease acquisition. Returns false when another live worker holds the job. */
@@ -185,7 +203,7 @@ export async function acquireJobLease(jobId: string, workerId: string, leaseSeco
 
 export async function heartbeatJob(jobId: string, workerId: string, leaseSeconds: number): Promise<void> {
   await prisma.processingJob.updateMany({
-    where: { id: jobId, workerId },
+    where: { id: jobId, workerId, leaseExpiresAt: { gt: new Date() }, status: { notIn: ['COMPLETED', 'CANCELLED', 'FAILED', 'PARTIALLY_COMPLETED'] } },
     data: { heartbeatAt: new Date(), leaseExpiresAt: new Date(Date.now() + leaseSeconds * 1000) },
   });
 }

@@ -24,7 +24,8 @@ back to a built-in value. See `.env.example` for the full annotated list.
 | Storage | `STORAGE_DRIVER`, `STORAGE_LOCAL_ROOT`, `STORAGE_LOCAL_PUBLIC_BASE_URL`, `S3_*`, `S3_PUBLIC_BASE_URL`, `UPLOAD_CSP_ORIGINS` | Public S3 media must use HTTPS; `STORAGE_PUBLIC_BASE_URL` remains a legacy alias for `S3_PUBLIC_BASE_URL`; see `docs/UPLOADS.md` for bucket CORS |
 | AI service | `AI_ENGINE_URL`, `AI_ENGINE_API_KEY`, `VIDEO_PROCESSOR_URL`, `VIDEO_PROCESSOR_API_KEY` | Internal service auth |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_TEXT_MODEL`, `GEMINI_VISION_MODEL` | Model ids are explicit — no alias, no default |
-| YouTube | `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI` | Data API v3 |
+| YouTube publishing | `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI` | Data API v3 OAuth client used to upload to *your* channel |
+| YouTube import | `YOUTUBE_IMPORT_ENABLED`, `YTDLP_PATH`, `YOUTUBE_IMPORT_MAX_HEIGHT`, `YOUTUBE_IMPORT_TIMEOUT_SECONDS`, `YOUTUBE_IMPORT_MAX_FILESIZE_MB`, `YOUTUBE_COOKIES_FILE`, `YOUTUBE_PROXY`, `YOUTUBE_YTDLP_FFMPEG_LOCATION` | Fetches a pasted YouTube URL inside the pipeline worker; needs `yt-dlp` + `ffmpeg` on that host. See `docs/YOUTUBE-IMPORT.md` |
 | Meta | `META_APP_ID`, `META_APP_SECRET`, `META_REDIRECT_URI`, `META_GRAPH_API_VERSION` | Version must be one of the whitelisted values (`v21.0` … `v27.0`) |
 | Usage prices | `PRICE_GEMINI_INPUT_PER_1K_TOKENS`, `PRICE_GEMINI_OUTPUT_PER_1K_TOKENS`, `PRICE_VISION_INPUT_PER_1K_TOKENS`, `PRICE_VISION_OUTPUT_PER_1K_TOKENS`, `PRICE_TRANSCRIPTION_PER_SECOND`, `PRICE_RENDER_PER_SECOND`, `PRICE_STORAGE_PER_GB_MONTH`, `PRICE_PUBLISH_CALL` | Unit economics for the usage ledger. Defaults: hosted model input `0.0001`/1k, output `0.0004`/1k, storage `0.023`/GB-month, self-hosted whisper/ffmpeg and platform publish calls `0`. Changing them does not rewrite history: each `UsageRecord` stores the cost computed when it was written |
 

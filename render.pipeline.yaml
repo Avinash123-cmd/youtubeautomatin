@@ -93,6 +93,20 @@ services:
         sync: false
       - key: WORK_DIR
         value: /tmp/clipforge/work
+      # YouTube URL import: the API image ships yt-dlp + ffmpeg, and the pipeline worker performs the
+      # download. Keep this enabled unless only uploads are allowed on this deployment.
+      - key: YOUTUBE_IMPORT_ENABLED
+        value: true
+      - key: YTDLP_PATH
+        value: /usr/local/bin/yt-dlp
+      - key: YOUTUBE_IMPORT_MAX_HEIGHT
+        value: 1080
+      - key: YOUTUBE_IMPORT_TIMEOUT_SECONDS
+        value: 1800
+      - key: YOUTUBE_IMPORT_MAX_FILESIZE_MB
+        value: 2048
+      - key: YOUTUBE_COOKIES_FILE
+        sync: false
       - key: AI_ENGINE_URL # https://<ai-engine host> — fromService exposes only the bare host
         sync: false
       - key: AI_ENGINE_API_KEY
@@ -267,6 +281,18 @@ services:
           name: clipforge-api
           type: web
           envVarKey: WORK_DIR
+      - key: YOUTUBE_IMPORT_ENABLED
+        value: true
+      - key: YTDLP_PATH
+        value: /usr/local/bin/yt-dlp
+      - key: YOUTUBE_IMPORT_MAX_HEIGHT
+        value: 1080
+      - key: YOUTUBE_IMPORT_TIMEOUT_SECONDS
+        value: 1800
+      - key: YOUTUBE_IMPORT_MAX_FILESIZE_MB
+        value: 2048
+      - key: YOUTUBE_COOKIES_FILE
+        sync: false
       - key: AI_ENGINE_URL
         fromService:
           name: clipforge-api

@@ -27,7 +27,8 @@ clipforge-ai/
 │   ├── monitoring/               # log/metric plumbing
 │   └── scripts/                  # run-service, healthcheck, backup, restore
 ├── scripts/                      # developer automation (not shipped)
-├── docs/                         # design, operations, and status documents
+├── docs/                        # design, operations, and status documents
+├── .github/workflows/            # CI: structure, typecheck, unit tests, dashboard build
 ├── docker-compose.dev.yml        # local stack
 ├── docker-compose.prod.yml       # production stack
 ├── docker-compose.monitoring.yml # optional blackbox/Prometheus overlay
@@ -53,6 +54,7 @@ clipforge-ai/
 | A user-journey test | `tests/e2e/<journey>.py` | Drives the live API with real cookies/CSRF |
 | A deployment change | `infrastructure/` | Not `scripts/` — that is dev-only |
 | A new document | `docs/` | See `docs/DOCUMENT-INDEX.md` for the map |
+| A CI change | `.github/workflows/` | Mirrors `npm run verify`; never deploys |
 
 ## Conventions
 

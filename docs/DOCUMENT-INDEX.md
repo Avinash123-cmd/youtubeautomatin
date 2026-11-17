@@ -6,6 +6,7 @@ grouped by intent — use that one if you are browsing, this one if you know the
 | Document | Answers |
 | --- | --- |
 | [README.md](README.md) | where do I start, given what I am trying to do? |
+| [foundation-audit.md](foundation-audit.md) | what foundation defects were fixed, which production settings are required, and which acceptance gates remain blocked? |
 | [platform-engineering-ledger.md](platform-engineering-ledger.md) | what was fixed and verified in the current production-hardening programme, and what remains blocked? |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | how do the API, the workers, the two Python services and the database fit together? |
 | [FOLDER-STRUCTURE.md](FOLDER-STRUCTURE.md) | where does a new file go, and what happens to a request and a job end to end? |

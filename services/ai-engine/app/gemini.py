@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import time
 from dataclasses import dataclass
@@ -78,9 +79,8 @@ class GeminiClient:
                 with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
                     response = client.post(
                         url,
-                        params={"key": self.settings.gemini_api_key},
                         json=body,
-                        headers={"content-type": "application/json"},
+                        headers={"content-type": "application/json", "x-goog-api-key": self.settings.gemini_api_key},
                     )
                 if response.status_code != 200:
                     payload = _safe_json(response.text)
@@ -99,6 +99,7 @@ class GeminiClient:
                     parsed = json.loads(text)
                 except json.JSONDecodeError as exc:
                     raise GeminiError(f"Gemini returned non-JSON output: {exc}", retryable=True, details=text[:600]) from exc
+                validate_structured(parsed, response_schema)
                 usage = _usage(payload)
                 return parsed, usage
             except (httpx.HTTPError, GeminiError) as exc:
@@ -146,3 +147,34 @@ def _usage(payload: dict) -> GeminiUsage:
         candidate_tokens=int(usage.get("candidatesTokenCount", 0)),
         total_tokens=int(usage.get("totalTokenCount", 0)),
     )
+
+
+def validate_structured(value: Any, schema: dict, path: str = "response") -> None:
+    """Validate the schema subset used by our prompts, not just JSON syntax.
+
+    Provider structured-output settings are a request, not a trust boundary.
+    Error paths contain no source text or returned model values.
+    """
+    kind = schema.get("type", "").lower()
+    valid = {
+        "object": lambda: isinstance(value, dict),
+        "array": lambda: isinstance(value, list),
+        "string": lambda: isinstance(value, str),
+        "number": lambda: isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value),
+        "integer": lambda: isinstance(value, int) and not isinstance(value, bool),
+        "boolean": lambda: isinstance(value, bool),
+    }
+    if kind not in valid or not valid[kind]():
+        raise SchemaValidationError(f"{path}: expected {kind or 'supported schema type'}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise SchemaValidationError(f"{path}: value is outside the allowed enum")
+    if kind == "object":
+        for key in schema.get("required", []):
+            if key not in value:
+                raise SchemaValidationError(f"{path}.{key}: required field missing")
+        for key, child in schema.get("properties", {}).items():
+            if key in value:
+                validate_structured(value[key], child, f"{path}.{key}")
+    elif kind == "array":
+        for index, child in enumerate(value):
+            validate_structured(child, schema["items"], f"{path}[{index}]")

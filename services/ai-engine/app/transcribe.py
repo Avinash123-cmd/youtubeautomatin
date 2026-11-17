@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .timing import validate_transcript
 
 logger = logging.getLogger("ai-engine.transcribe")
 
@@ -69,7 +70,7 @@ def transcribe(settings: Settings, audio_path: str | Path, language: str | None 
         )
         full_text_parts.append(segment.text.strip())
 
-    return {
+    return validate_transcript({
         "language": info.language,
         "language_probability": round(float(info.language_probability), 4),
         "duration_seconds": round(float(info.duration), 3),
@@ -78,7 +79,7 @@ def transcribe(settings: Settings, audio_path: str | Path, language: str | None 
         "word_timestamps": True,
         "full_text": " ".join(full_text_parts).strip(),
         "segments": segments,
-    }
+    }, float(info.duration))
 
 
 def segments_in_window(segments: list[dict], start: float, end: float) -> list[dict]:

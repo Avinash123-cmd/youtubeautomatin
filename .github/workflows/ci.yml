@@ -46,6 +46,11 @@ jobs:
       - name: Typecheck every workspace
         run: npm run typecheck
 
+      # `tests/unit/production-startup.test.ts` starts the *compiled* server on purpose (it proves
+      # `node dist/main.js` works without a watch supervisor), so the API must be built first.
+      - name: Build API
+        run: npm run build:api
+
       - name: Unit tests
         run: npm run test:unit
 

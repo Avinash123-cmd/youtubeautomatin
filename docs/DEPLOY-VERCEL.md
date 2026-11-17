@@ -253,3 +253,92 @@ Vercel can be skipped entirely: `docker-compose.prod.yml` already defines the we
 Caddy (TLS, HTTP/3) plus API, workers, both Python services, Postgres and Redis. One VPS with Docker
 runs the whole thing, with no cold starts and no payload caps. The only thing you give up is
 Vercel's preview deployments.
+
+## Native Node backend on Render — workspace build repair (2026-11-16)
+
+This applies to a manually created **Node Web Service**, not the Docker blueprint above.
+
+### Why the reported build failed
+
+The log from commit `140a2abb793905524392cbf6fc7c1710fd317f78` shows `npm run build`
+executing in `apps/api`. Its prebuild only built validation (and shared-types), not the API's
+other runtime workspace packages. Both `@clipforge/database` and `@clipforge/platform-connectors`
+resolve through ignored `dist/index.js` / `dist/index.d.ts`, which do not exist in a fresh checkout.
+The schema-specific Prisma client also was not generated: the missing Otp enums and SourceVideo
+Prisma types are evidence of that separate generation step being omitted. Most implicit-any and
+unknown/property errors are downstream of these missing dependencies, not a reason to weaken
+TypeScript or patch dozens of application methods.
+
+API predev/prebuild/pretypecheck now run validation → platform-connectors → database; validation
+builds shared-types first and database runs `prisma generate` using its own schema before tsc.
+Root `build:api` / `start:api` commands provide backend-only Render entry points. No DB migrations,
+resets, secrets, auth logic or video pipeline code were changed by this repair.
+
+### Exact Render service settings
+
+Use the **repository root**, so all workspaces and the root lockfile are included:
+
+| Setting | Value |
+| --- | --- |
+| Runtime | Node |
+| Root Directory | **Leave blank** (repository root) |
+| Build Command | `npm ci --include=dev && npm run build:api` |
+| Start Command | `API_PORT=${PORT:-4000} npm run start:api` |
+| Health Check Path | `/api/system/health` |
+| Environment | `NODE_ENV=production` |
+| Node version | Pin `NODE_VERSION=22.22.3` (the local verification version), instead of relying on Render's default |
+
+Do not set Root Directory to `apps/api`: Render must retain access to sibling `packages/`.
+If intentionally invoking a command within that directory in a full monorepo checkout, `npm run
+build` there is now dependency-complete too. Do not use `--ignore-scripts` for the build or omit
+build-time dev dependencies. Do not copy the sandbox's Prisma engine-free flags to Render: normal
+`prisma generate` must download/include a native engine for the deployment platform. No need to
+build the Next frontend on the backend service.
+
+Set runtime environment values securely in Render, using `.env.example` as the inventory:
+
+- `DATABASE_URL`: actual PostgreSQL connection string; `REDIS_URL`: reachable Redis/Key Value URL;
+  `REDIS_PREFIX=clipforge`.
+- `APP_URL` and `ALLOWED_ORIGINS`: the actual frontend HTTPS origin(s); no wildcard.
+- `SESSION_SECRET`: at least 32 random characters; `CREDENTIAL_ENCRYPTION_KEY`: valid encryption key
+  per the environment inventory. Preserve existing production values to retain sessions/decryption.
+- `TIMEZONE=Asia/Kolkata`, `LOG_LEVEL=info`.
+- Storage configuration and `WORK_DIR` (e.g. `/tmp/clipforge/work`). Local storage is ephemeral on
+  Render; use configured S3-compatible storage for durable production media.
+- Required `AI_ENGINE_URL`, `AI_ENGINE_API_KEY`, `VIDEO_PROCESSOR_URL`, `VIDEO_PROCESSOR_API_KEY`.
+  Actual video processing additionally needs the separate services/workers; deploying only the API
+  does not provide a functioning processing pipeline.
+- Telegram-only login needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`,
+  `TELEGRAM_WEBHOOK_SECRET` together. `TELEGRAM_WEBHOOK_URL` must use the actual public Render HTTPS
+  hostname and `/api/auth/telegram/webhook`. Follow the [existing bot setup](existing-telegram-bot-setup.md);
+  never register localhost or paste secrets into logs/chat.
+
+Apply reviewed pending migrations against the existing database with `npm run db:deploy` from
+the root in a controlled deploy step (Render pre-deploy command where available, otherwise an
+operator-controlled environment with the same DB credentials and Prisma CLI installed). This is
+`prisma migrate deploy`, **not** `migrate dev`, `db push`, or reset. Back up existing production
+data first. The native Node start command does not apply migrations automatically; the Docker
+entrypoint's RUN_MIGRATIONS behavior does not apply to this setup.
+
+After the change reaches the deployed branch, use **Clear build cache & deploy** once. Check
+build output for schema generation and all four workspace builds, then the Nest compilation. Check
+health and `/api/auth/providers`, `/api/auth/telegram/status` on the deployed API; verify real login
+only after webhook/database/session configuration. Point frontend `API_INTERNAL_URL` at this API's
+actual origin and rebuild the frontend because its rewrites are compiled at build time.
+
+### Checks and limits for this repair
+
+- Removed generated workspace dist folders, API dist and generated Prisma client, then ran
+  `npm run build:api`: dependency order, client generation and strict API compilation passed using
+  engine-free generation **only in this sandbox**.
+- API-local `npm run build` and API typecheck passed with the same sandbox generation flags.
+- Real-entry regression checks load all four built backend packages and generated Prisma OTP enums
+  and SourceVideo model metadata, without Vitest's source aliases.
+- Full unit suite: **324 passed, 2 optional proxy cases skipped**, 40 files, with a test-only session
+  secret. No live Telegram authentication or database operation was fabricated.
+- Normal native generation was attempted but blocked by this sandbox's restricted network/TLS to
+  `binaries.prisma.sh`. Native-engine download, Node 24 behavior, live Render boot, migrations and
+  live authentication are **not verified** here. The Node 22 pin avoids an untested default upgrade;
+  the supplied log's compile failures are dependency/generation failures, not proven Node 24 bugs.
+- The audit warnings in the deployment log are separate security work, not the cause of these
+  TS2307 errors. Do not run `npm audit fix --force` blindly as part of this deployment repair.

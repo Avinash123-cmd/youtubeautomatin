@@ -241,7 +241,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
     include: { clips: { include: { variants: true, metadata: true } } },
   });
   if (!job) return;
-  if (['ASSET_STORAGE', 'PUBLISHING_QUEUED', 'PUBLISHING', 'COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'].includes(job.status)) return;
+  if (['ASSET_STORAGE', 'PUBLISHING_QUEUED', 'PUBLISHING', 'COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED', 'FAILED'].includes(job.status)) return;
 
   const pending = job.clips.filter((clip) => clip.status !== 'READY' && clip.status !== 'RENDER_FAILED');
   if (pending.length > 0) return;
@@ -253,7 +253,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
     await transitionJob(jobId, 'FAILED', {
       errorCode: 'RENDER_FAILED',
       errorMessage: `All ${job.clips.length} clip(s) failed to render`,
-      workerId: currentLeaseOwner(runtime.workerId),
+      workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     });
     return;
   }
@@ -261,13 +261,13 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
   await transitionJob(jobId, 'VALIDATION', {
     progressPercent: 80,
     progressDetail: `Validated ${ready.length} rendered clip(s)`,
-    workerId: currentLeaseOwner(runtime.workerId),
+    workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
   await transitionJob(jobId, 'ASSET_STORAGE', {
     progressPercent: 88,
     progressDetail: `Stored ${ready.length} clip asset(s) in ${storage.driver} storage`,
-    workerId: currentLeaseOwner(runtime.workerId),
+    workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
 
@@ -275,7 +275,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
   const autoPublish = configuration.autoPublish && configuration.platforms.length > 0;
 
   if (!autoPublish) {
-    await transitionJob(jobId, 'COMPLETED', {
+    await transitionJob(jobId, failed.length ? 'PARTIALLY_COMPLETED' : 'COMPLETED', {
       progressPercent: 100,
       progressDetail: `${ready.length} clip(s) ready${failed.length ? `, ${failed.length} failed` : ''}`,
       resultSummary: {
@@ -283,7 +283,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
         clipsFailed: failed.length,
         publishing: 'manual',
       } as Prisma.InputJsonValue,
-      workerId: currentLeaseOwner(runtime.workerId),
+      workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     });
     return;
   }
@@ -329,13 +329,13 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
   await transitionJob(jobId, 'PUBLISHING_QUEUED', {
     progressPercent: 92,
     progressDetail: `Publishing jobs queued for ${configuration.platforms.join(', ')}`,
-    workerId: currentLeaseOwner(runtime.workerId),
+    workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
   await transitionJob(jobId, 'PUBLISHING', {
     progressPercent: 95,
     progressDetail: 'Waiting for platform confirmation',
-    workerId: currentLeaseOwner(runtime.workerId),
+    workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
 }

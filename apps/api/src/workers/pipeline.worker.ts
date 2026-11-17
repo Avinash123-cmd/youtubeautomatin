@@ -10,7 +10,7 @@ import { deferContendedJob, currentLeaseOwner, withLeaseScope } from './lease-co
  */
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { prisma, transitionJob, acquireJobLease, writeOutbox, releaseJobLease, appendAuditLog } from '@clipforge/database';
+import { prisma, transitionJob, transitionJobInTransaction, JobLeaseLostError, acquireJobLease, writeOutbox, releaseJobLease, appendAuditLog } from '@clipforge/database';
 import { PIPELINE_STATES } from '@clipforge/shared-types';
 import type { Prisma } from '@prisma/client';
 import { env } from '../common/env';
@@ -90,7 +90,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
     // ------------------------------- PROBING ---------------------------------
     if (!completedStages.has('PROBING')) {
       await transitionJob(jobId, 'PROBING', {
-        workerId: currentLeaseOwner(runtime.workerId),
+        workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
         progressPercent: 5,
         progressDetail: 'Inspecting source media with ffprobe',
         leaseSeconds: env.JOB_LEASE_SECONDS,
@@ -117,7 +117,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         },
       });
       await transitionJob(jobId, 'TRANSCRIBING', {
-        workerId: currentLeaseOwner(runtime.workerId),
+        workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
         progressPercent: 12,
         progressDetail: `Probed ${probe.width}x${probe.height}, ${probe.duration_seconds.toFixed(1)}s`,
         leaseSeconds: env.JOB_LEASE_SECONDS,
@@ -198,7 +198,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         },
       });
       await transitionJob(jobId, 'AI_ANALYSIS', {
-        workerId: currentLeaseOwner(runtime.workerId),
+        workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
         progressPercent: 30,
         progressDetail: `${transcription.segments.length} transcript segments (${transcription.language})`,
         leaseSeconds: env.JOB_LEASE_SECONDS,
@@ -355,7 +355,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
           report: analysis.report,
           variantDecisions: analysis.variant_decisions,
         } as Prisma.InputJsonValue,
-        workerId: currentLeaseOwner(runtime.workerId),
+        workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
       });
       await appendAuditLog({
         workspaceId: job.workspaceId,
@@ -499,8 +499,9 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
     }
 
     // ------------------------------- RENDERING --------------------------------
-    await transitionJob(jobId, 'RENDERING', {
-      workerId: currentLeaseOwner(runtime.workerId),
+    await prisma.$transaction(async (tx) => {
+      await transitionJobInTransaction(tx, jobId, 'RENDERING', {
+      workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
       progressPercent: 45,
       progressDetail: `${clipIds.length} clip(s) queued for vertical rendering`,
       resultSummary: {
@@ -511,8 +512,6 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       } as Prisma.InputJsonValue,
       leaseSeconds: env.JOB_LEASE_SECONDS,
     });
-
-    await prisma.$transaction(async (tx) => {
       for (const clipId of clipIds) {
         await writeOutbox(tx, {
           aggregateType: 'GeneratedClip',
@@ -524,6 +523,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       }
     });
   } catch (error) {
+    if (error instanceof JobLeaseLostError) throw error;
     const serviceError = error instanceof ServiceCallError ? error : null;
     const retryable = serviceError ? serviceError.retryable : true;
     const message = error instanceof Error ? error.message : String(error);
@@ -566,21 +566,12 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       errorMessage: message.slice(0, 1800),
       errorDetails: { stage: job.stage, retryable, attempt } as Prisma.InputJsonValue,
       progressDetail: exhausted ? `Failed: ${message}`.slice(0, 400) : `Retrying: ${message}`.slice(0, 400),
-      workerId: currentLeaseOwner(runtime.workerId),
+      ...(!exhausted ? { enqueue: {
+        queue: 'clipforge.pipeline', eventType: 'job.retry', payload: { jobId },
+        availableAt: new Date(Date.now() + 15_000 * Math.max(1, attempt)),
+      } } : {}),
+      workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     });
-    if (!exhausted) {
-      // Re-enqueue from the last successful stage via the outbox (durable).
-      await prisma.$transaction(async (tx) => {
-        await writeOutbox(tx, {
-          aggregateType: 'ProcessingJob',
-          aggregateId: jobId,
-          eventType: 'job.retry',
-          queue: 'clipforge.pipeline',
-          payload: { jobId },
-          availableAt: new Date(Date.now() + 15_000 * attempt),
-        });
-      });
-    }
     throw error;
   }
 }
@@ -606,7 +597,7 @@ async function ensureStatus(jobId: string, expected: string): Promise<void> {
     runtime.logger.info(`job ${jobId} is already at ${job.status}; not rewinding to ${expected}`);
     return;
   }
-  await transitionJob(jobId, expected as never, { workerId: currentLeaseOwner(runtime.workerId), leaseSeconds: env.JOB_LEASE_SECONDS });
+  await transitionJob(jobId, expected as never, { workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId), leaseSeconds: env.JOB_LEASE_SECONDS });
 }
 
 async function main() {

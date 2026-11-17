@@ -16,6 +16,7 @@ export const revalidate = 0;
 // Inlined by next.config at build time, so this is what the rewrites were compiled with — the
 // environment variable itself need not exist at runtime.
 const TARGET = (process.env.CLIPFORGE_API_TARGET ?? process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:4000').replace(/\/+$/, '');
+const LOCAL_TARGET = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(TARGET).hostname);
 const NOT_CONFIGURED = TARGET.includes('api-not-configured.invalid');
 
 /**
@@ -69,7 +70,9 @@ export async function GET() {
           ? 'No API origin was configured for this build. Set API_INTERNAL_URL in Vercel (or apiOrigin in apps/web/api-target.json) and redeploy — rewrites are baked at build time.'
           : identity === 'other'
             ? `That host answered ${status} — it is not your ClipForge API. Render names are global, so a taken name gets a suffix (clipforge-api-xxxx.onrender.com): copy the URL from your Render service page and use exactly that.`
-            : error
+            : error && LOCAL_TARGET
+              ? `Local backend unavailable at ${TARGET}. Start exactly one API with npm run dev:api, check its listening message and API_PORT, then retry. If API_INTERNAL_URL changes, restart Next (rebuild for production).`
+              : error
               ? `The API origin did not answer (${error}). A free Render instance sleeps after 15 min and needs ~30 s to wake — otherwise the URL is wrong.`
               : `The API answered ${status} but is not healthy. Open ${TARGET}/api/system/health for its own report.`,
     },

@@ -53,3 +53,7 @@ Rules for this directory:
 ## Login contract regression report
 
 - [Telegram login crash and API contract fix](login-contract-fix.md) — causes, response contracts, verification and remaining live-service gates.
+
+## Local process lifecycle
+
+- [Reliable local API and frontend startup](local-startup.md) — Windows port ownership, single API workflow, proxy health and shutdown/recovery checks.

@@ -15,10 +15,23 @@ import { AppLogger, workerLogger } from './common/services/logger.service';
 import { env, loadEnv } from './common/env';
 import { buildHelmetOptions } from './common/security-headers';
 
+let application: NestExpressApplication | undefined;
+
 async function bootstrap() {
   loadEnv();
   const logger = new AppLogger('bootstrap');
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger, forceCloseConnections: true });
+  application = app;
+  let closing = false;
+  const closeFromParent = () => {
+    if (closing) return;
+    closing = true;
+    void app.close().then(() => process.exit(0)).catch(error => { console.error('[fatal] API shutdown failed:', error); process.exit(1); });
+  };
+  process.on('message', message => {
+    if (message && typeof message === 'object' && 'type' in message && message.type === 'clipforge:shutdown') closeFromParent();
+  });
+  if (process.send) process.once('disconnect', closeFromParent);
 
   app.disable('etag'); // Session/CSRF responses must never become conditional 304s.
   app.use(authHttpMetadata);
@@ -66,8 +79,14 @@ async function bootstrap() {
   workerLogger.child({ port: env.API_PORT, env: env.NODE_ENV }).info('ClipForge API listening');
 }
 
-bootstrap().catch((error) => {
+if (require.main === module) void bootstrap().catch(async (error: unknown) => {
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
+    console.error(`[fatal] API_PORT=${env.API_PORT} is already in use. Stop only the API instance you own, or inspect the listener PID before taking action. Do not run dev:api and start:api together. No process was killed and the port was not changed.`);
+  }
   // Fail loudly: a misconfigured environment must never start a half-working API.
   console.error('[fatal] API failed to start:', error instanceof Error ? (error.stack ?? error.message) : error);
+  const deadline = setTimeout(() => process.exit(1), 10000);
+  try { await application?.close(); } catch { console.error('[fatal] API resource cleanup failed.'); }
+  clearTimeout(deadline);
   process.exit(1);
 });

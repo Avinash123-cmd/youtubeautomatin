@@ -23,6 +23,8 @@ export interface SessionResponse {
 export function useSession() {
   return useQuery({
     queryKey: ['session'],
+    // Recover from a stopped/restarted API without repeatedly polling healthy sessions.
+    refetchInterval: query => query.state.error ? 5000 : false,
     queryFn: async () => {
       const session = await api<SessionResponse>('/api/auth/session');
       if (session.authenticated && session.csrfToken) setCsrfToken(session.csrfToken);

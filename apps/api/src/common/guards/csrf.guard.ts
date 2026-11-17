@@ -26,7 +26,7 @@ export class CsrfGuard implements CanActivate {
     if (SAFE_METHODS.has(request.method)) return true;
 
     const ctx = (request as Request & { context?: RequestContext }).context;
-    if (!ctx) {
+    if (!ctx || ctx.developmentBypass) {
       // Public POST routes (login/register) still require a CSRF token tied to a
       // pre-session cookie, which the client obtains from GET /api/auth/csrf.
       const cookieValue = request.cookies?.['cf_csrf'] as string | undefined;

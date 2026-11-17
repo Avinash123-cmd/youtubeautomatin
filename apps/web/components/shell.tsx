@@ -4,9 +4,11 @@ import clsx from 'clsx';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useLogout, useSession } from '@/lib/hooks';
+import { useLogout, useSession, type SessionResponse } from '@/lib/hooks';
 import { BackendDown } from './backend-down';
 import { Badge } from './ui';
+
+const NO_SESSION: SessionResponse = { authenticated: false };
 
 type NavItem = { href: string; label: string; short: string; icon: string };
 
@@ -49,11 +51,13 @@ function NavIcon({ d, active }: { d: string; active: boolean }) {
   );
 }
 
-export function Shell({ children }: { children: ReactNode }) {
+export function Shell({ children, developmentBypass = false }: { children: ReactNode; developmentBypass?: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const sessionQuery = useSession();
-  const { data: session, isLoading } = sessionQuery;
+  const { isLoading } = sessionQuery;
+  const session = sessionQuery.data ?? NO_SESSION;
+  const developmentAccess = developmentBypass;
   const logout = useLogout();
 
   const [open, setOpen] = useState(false);
@@ -65,10 +69,11 @@ export function Shell({ children }: { children: ReactNode }) {
   const isPublicAuthPage = ['/login', '/register', '/forgot-password'].includes(pathname);
 
   useEffect(() => {
-    if (!isLoading && !sessionQuery.isFetching && session && !session.authenticated && !isPublicAuthPage) {
+    if (!isLoading && !sessionQuery.isFetching && session && !session.authenticated && !developmentAccess && !isPublicAuthPage) {
       router.replace('/login');
     }
-  }, [isLoading, sessionQuery.isFetching, session, router, pathname, isPublicAuthPage]);
+    if (developmentAccess && isPublicAuthPage) router.replace('/');
+  }, [isLoading, sessionQuery.isFetching, session, router, pathname, isPublicAuthPage, developmentAccess]);
 
   // The drawer is a modal surface: close on navigation, Escape, and lock background scroll while open.
   useEffect(() => {
@@ -107,15 +112,15 @@ export function Shell({ children }: { children: ReactNode }) {
     };
   }, [open, close]);
 
-  if (isPublicAuthPage) return <>{children}</>;
-  if (isLoading) {
+  if (isPublicAuthPage) return developmentAccess ? null : <>{children}</>;
+  if (isLoading && !developmentAccess) {
     return (
       <div className="grid min-h-[100dvh] place-items-center p-6 text-center text-sm text-ink-soft">
         Checking your session…
       </div>
     );
   }
-  if (!session?.authenticated) {
+  if (!session.authenticated && !developmentAccess) {
     // A failed session probe is not "signed out": with no API the login form could never succeed
     // either, so say what is actually broken.
     if (sessionQuery.error) {
@@ -165,8 +170,8 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="border-t border-line px-4 py-4">
           <p className="truncate text-[13px] font-medium text-ink">{session.user?.displayName}</p>
           <p className="truncate text-xs text-ink-faint">{session.user?.email}</p>
-          <button type="button" onClick={signOut} className="btn-ghost mt-2 w-full justify-start px-2 text-[13px]">
-            Sign out
+          <button type="button" onClick={signOut} disabled={developmentAccess} title={developmentAccess ? 'Set AUTH_BYPASS=false and restart both servers to restore login' : undefined} className="btn-ghost mt-2 w-full justify-start px-2 text-[13px]">
+            {developmentAccess ? 'Not signed in (dev mode)' : 'Sign out'}
           </button>
         </div>
       </aside>
@@ -225,8 +230,8 @@ export function Shell({ children }: { children: ReactNode }) {
             <div className="border-t border-line px-4 py-4">
               <p className="truncate text-sm font-medium text-ink">{session.user?.displayName}</p>
               <p className="truncate text-xs text-ink-faint">{session.user?.email}</p>
-              <button type="button" onClick={signOut} className="btn-secondary mt-3 w-full">
-                Sign out
+              <button type="button" onClick={signOut} disabled={developmentAccess} title={developmentAccess ? 'Set AUTH_BYPASS=false and restart both servers to restore login' : undefined} className="btn-secondary mt-3 w-full">
+                {developmentAccess ? 'Not signed in (dev mode)' : 'Sign out'}
               </button>
             </div>
           </div>
@@ -275,7 +280,25 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1180px] flex-1 px-4 pb-24 pt-5 sm:px-6 sm:py-7 lg:pb-7">{!session.user?.authMethods?.includes('TELEGRAM_BOT') ? <p role="alert" className="mb-5 rounded-xl bg-caution-soft p-4 text-sm text-caution">Authentication has moved to Telegram. <Link href="/security" className="font-semibold underline">Link your Telegram account now</Link> before this existing session expires.</p> : null}{children}</main>
+        <main className="mx-auto w-full max-w-[1180px] flex-1 px-4 pb-24 pt-5 sm:px-6 sm:py-7 lg:pb-7">
+          {developmentAccess ? (
+            <p role="status" className="mb-5 rounded-xl bg-caution-soft p-4 text-sm">
+              Development authentication bypass — not signed in. Dedicated local workspace only.
+              Publishing, account/security changes and operator mutations still require login.
+            </p>
+          ) : null}
+          {developmentAccess && sessionQuery.error ? <BackendDown message={sessionQuery.error.message} onRetry={() => void sessionQuery.refetch()} /> : null}
+          {!developmentAccess && !session.user?.authMethods?.includes('TELEGRAM_BOT') ? (
+            <p role="alert" className="mb-5 rounded-xl bg-caution-soft p-4 text-sm text-caution">
+              Authentication has moved to Telegram. <Link href="/security" className="font-semibold underline">Link your Telegram account now</Link> before this existing session expires.
+            </p>
+          ) : null}
+          {developmentAccess && pathname === '/security' ? (
+            <p className="rounded-xl border border-line p-5">
+              Account security requires a verified Telegram session. Disable AUTH_BYPASS and restart both development servers to test identity and session controls.
+            </p>
+          ) : children}
+        </main>
 
         <nav
           aria-label="Quick navigation"

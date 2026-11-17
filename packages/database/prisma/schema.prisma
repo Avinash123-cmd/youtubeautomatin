@@ -697,6 +697,9 @@ model ClipVariant {
 }
 
 model ClipMetadata {
+  // Immutable generated payload; editable fields below remain publishing inputs.
+  originalAiOutput Json?
+  editedAt DateTime?
   id         String   @id @default(uuid()) @db.Uuid
   clipId     String   @db.Uuid
   platform   Platform

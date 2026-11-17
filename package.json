@@ -43,11 +43,17 @@
     "openapi:export": "curl -fsS http://127.0.0.1:4000/api/docs/openapi.json -o docs/openapi.json",
     "pretest:unit": "npm run build:packages",
     "build:api": "npm run build -w @clipforge/api",
-    "start:api": "npm run start:prod -w @clipforge/api"
+    "start:api": "npm run start:prod -w @clipforge/api",
+    "check:typescript": "node scripts/check-typescript.cjs",
+    "prebuild": "npm run check:typescript",
+    "prebuild:api": "npm run check:typescript"
   },
   "devDependencies": {
     "typescript": "5.7.2",
     "tsx": "4.19.2",
     "prettier": "3.4.2"
+  },
+  "overrides": {
+    "typescript": "$typescript"
   }
 }

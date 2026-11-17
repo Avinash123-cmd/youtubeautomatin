@@ -61,3 +61,7 @@ Rules for this directory:
 ## Native Render API production startup
 
 - [Compiled-only Render API deployment](render-api-production.md) — production command, PORT handling, Node pin, configuration, safe migrations and verification limits.
+
+## TypeScript build toolchain
+
+- [Render compiler consistency](typescript-build-toolchain.md) — locked compiler version, inherited configs, drift guard, full-build evidence and Render settings.

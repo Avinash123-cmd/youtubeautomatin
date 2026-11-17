@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Card, CardHeader, EmptyState, ErrorState, ProgressBar, Section, Skeleton, StatCard, StatusBadge } from '@/components/ui';
+import { Card, CardHeader, EmptyState, ErrorState, Icon, ProgressBar, Section, Skeleton, StatCard, StatusBadge } from '@/components/ui';
 import { useDashboard, useSession, useSystemOverview } from '@/lib/hooks';
 import { formatDuration, formatRelative } from '@/lib/api';
 
@@ -30,21 +30,54 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-7">
-      <section className="relative isolate overflow-hidden rounded-3xl bg-[#11152f] p-6 text-white sm:p-9">
-        <div aria-hidden="true" className="pointer-events-none absolute -right-10 -top-20 -z-10 h-80 w-80 rounded-full bg-purple-500/20 blur-3xl" />
+      <section className="surface-glow animate-fade-up p-6 sm:p-9">
         <div className="flex flex-wrap items-center justify-between gap-6">
-          <div className="max-w-xl"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-200">Your creative workspace</p><h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Big ideas. Short-form impact.</h1><p className="mt-3 text-sm leading-relaxed text-slate-300">Turn your authorized footage into captioned vertical clips. Review every detail, then choose when and where to publish.</p></div>
-          <div className="flex flex-wrap gap-3"><Link href="/create" className="btn bg-white text-slate-900 hover:bg-purple-50">＋ Create project</Link><Link href="/calendar" className="btn border border-white/25 text-white hover:bg-white/10">Content calendar →</Link></div>
+          <div className="max-w-xl">
+            <p className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-200">
+              <Icon name="sparkles" className="h-3.5 w-3.5" />
+              AI clip studio
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold leading-tight tracking-tight text-white sm:text-[40px]">
+              Long videos in.<br />
+              <span className="bg-gradient-to-r from-indigo-200 via-violet-200 to-pink-200 bg-clip-text text-transparent">Publish-ready clips out.</span>
+            </h1>
+            <p className="mt-3 max-w-lg text-sm leading-relaxed text-slate-300">
+              Paste a YouTube link or upload your own footage. ClipForge transcribes it, finds the strongest moments, burns in captions and
+              queues each clip for YouTube Shorts and Instagram Reels.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link href="/create" className="btn bg-white text-slate-900 hover:bg-indigo-50">
+                <Icon name="youtube" className="h-4 w-4 text-[#FF0033]" />
+                Paste a YouTube link
+              </Link>
+              <Link href="/calendar" className="btn border border-white/25 text-white hover:bg-white/10">
+                <Icon name="calendar" className="h-4 w-4" />
+                Content calendar
+              </Link>
+            </div>
+          </div>
+          <div className="grid w-full max-w-[230px] gap-2 rounded-xl2 border border-white/10 bg-white/5 p-3 text-white sm:w-auto">
+            {[
+              ['Source videos', counts.sources],
+              ['Active jobs', counts.processing],
+              ['Clips ready', counts.clips],
+              ['Pending posts', counts.pendingPublishingJobs],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 text-[13px]">
+                <span className="text-slate-300">{label}</span>
+                <span className="font-semibold tabular-nums">{value}</span>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="mt-7 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/10 pt-4 text-xs text-slate-300"><span>{counts.processing} active processing jobs</span><span>{counts.pendingPublishingJobs} publishing jobs pending</span><span>{counts.clips} clips in your library</span></div>
       </section>
       <Section
         as="h2" title="Workspace overview" description="Every number below comes from the database — nothing is simulated.">
         <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
-          <StatCard label="Source videos" value={counts.sources} hint="Uploaded and validated media" />
-          <StatCard label="Generated clips" value={counts.clips} hint={`${data.variantBreakdown.map((v) => `${v.count}×${v.durationKind}s`).join(' · ') || 'none yet'}`} />
-          <StatCard label="Published posts" value={counts.published} hint={data.publishedByPlatform.map((p) => `${p.platform}: ${p.count}`).join(' · ') || 'No publishes yet'} tone={counts.published > 0 ? 'positive' : 'default'} />
-          <StatCard label="Active processing" value={counts.processing} hint={counts.failed > 0 ? `${counts.failed} failed job(s) need attention` : 'No failed jobs'} tone={counts.failed > 0 ? 'danger' : 'default'} />
+          <StatCard icon="film" label="Source videos" value={counts.sources} hint="Uploaded, imported and ingested media" />
+          <StatCard icon="scissors" label="Generated clips" value={counts.clips} hint={`${data.variantBreakdown.map((v) => `${v.count}×${v.durationKind}s`).join(' · ') || 'none yet'}`} />
+          <StatCard icon="chart" label="Published posts" value={counts.published} hint={data.publishedByPlatform.map((p) => `${p.platform}: ${p.count}`).join(' · ') || 'No publishes yet'} tone={counts.published > 0 ? 'positive' : 'default'} />
+          <StatCard icon="clock" label="Active processing" value={counts.processing} hint={counts.failed > 0 ? `${counts.failed} failed job(s) need attention` : 'No failed jobs'} tone={counts.failed > 0 ? 'danger' : 'default'} />
         </div>
       </Section>
 

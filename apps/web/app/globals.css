@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { --font-inter: 'Inter', system-ui, sans-serif; }
+:root {
+  --font-inter: 'Inter', 'Inter var', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
 
 html, body { height: 100%; }
 html { -webkit-text-size-adjust: 100%; }
@@ -16,21 +18,30 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+::selection { background: theme('colors.accent.soft'); color: theme('colors.accent.strong'); }
+
 /* Keyboard users get a visible ring; pointer users never see it. */
-:focus-visible { outline: 2px solid theme('colors.accent.DEFAULT'); outline-offset: 2px; border-radius: 6px; }
+:focus-visible { outline: 2px solid theme('colors.accent.DEFAULT'); outline-offset: 2px; border-radius: 8px; }
 
 /* Touch devices: keep every control at least 40px tall (WCAG 2.5.8 wants 24, fingers want 40). */
 @media (pointer: coarse) {
   button, .btn, a.btn { min-height: 40px; }
 }
 
+/* Thin, unobtrusive scrollbars inside panels (the page itself keeps native scrolling). */
+.slim-scroll { scrollbar-width: thin; scrollbar-color: theme('colors.line.strong') transparent; }
+.slim-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.slim-scroll::-webkit-scrollbar-thumb { background: theme('colors.line.strong'); border-radius: 9999px; }
+
 @keyframes cf-drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
 @keyframes cf-fade-in { from { opacity: 0; } to { opacity: 1; } }
-.cf-drawer { animation: cf-drawer-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1); }
-.cf-fade { animation: cf-fade-in 150ms ease-out; }
+@keyframes cf-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.cf-drawer { animation: cf-drawer-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.cf-fade { animation: cf-fade-in 160ms ease-out; }
+.cf-rise { animation: cf-rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .cf-drawer, .cf-fade { animation: none; }
+  .cf-drawer, .cf-fade, .cf-rise { animation: none; }
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 
@@ -38,16 +49,31 @@ body {
   /* min-w-0 keeps a card honest inside a grid/flex parent: without it the card grows to the
    min-content width of a wide table instead of letting the table scroll inside it. */
   .card { @apply min-w-0 rounded-xl2 border border-line bg-surface shadow-card; }
+  .card-hover { @apply transition duration-200 hover:-translate-y-0.5 hover:shadow-lift; }
   .label { @apply text-[13px] font-medium text-ink-soft; }
   .hint { @apply text-xs text-ink-faint; }
-  .input { @apply w-full rounded-lg border border-line-strong bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent-soft disabled:bg-surface-sunken; }
-  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50; }
-  .btn-primary { @apply btn bg-accent text-white hover:bg-accent-strong; }
-  .btn-secondary { @apply btn border border-line-strong bg-white text-ink hover:bg-surface-muted; }
-  .btn-ghost { @apply btn text-ink-soft hover:bg-surface-sunken; }
-  .badge { @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium; }
+  .input {
+    @apply w-full rounded-xl border border-line-strong bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition
+      placeholder:text-ink-faint/80 focus:border-accent focus:ring-4 focus:ring-accent/10 disabled:bg-surface-sunken;
+  }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50; }
+  .btn-primary { @apply btn bg-accent text-white shadow-glow hover:bg-accent-strong; }
+  .btn-secondary { @apply btn border border-line-strong bg-white text-ink hover:border-line-strong hover:bg-surface-muted; }
+  .btn-ghost { @apply btn text-ink-soft hover:bg-surface-sunken hover:text-ink; }
+  .btn-gradient { @apply btn bg-brand-gradient text-white shadow-glow hover:opacity-95; }
+  .badge { @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium; }
+  .chip { @apply inline-flex items-center gap-2 rounded-full border border-line-strong bg-white px-3.5 py-2 text-[13px] font-medium text-ink-soft transition hover:border-accent/40 hover:text-ink; }
+  .chip-active { @apply border-accent bg-accent-soft text-accent-strong shadow-none; }
   .table th { @apply border-b border-line px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-ink-faint; }
   .table td { @apply border-b border-line px-4 py-3 text-sm align-middle; }
   .table tbody tr:last-child td { @apply border-b-0; }
   .table tbody tr:hover { @apply bg-surface-muted/60; }
+  .surface-glow { @apply relative isolate overflow-hidden rounded-xl3 bg-[#0B1226] text-white; }
+  .surface-glow::before {
+    content: '';
+    @apply pointer-events-none absolute inset-0 -z-10 opacity-90;
+    background-image: theme('backgroundImage.mesh');
+  }
+  .skeleton { @apply animate-pulse rounded-xl bg-surface-sunken; }
+  .kbd { @apply rounded-md border border-line bg-surface-muted px-1.5 py-0.5 font-mono text-[11px] text-ink-soft; }
 }

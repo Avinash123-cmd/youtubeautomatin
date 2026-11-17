@@ -54,7 +54,7 @@ export default function JobDetailPage() {
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge value={data.status} />
           {data.clipCount > 0 ? <Link href="/clips" className="btn-secondary">View {data.clipCount} clip(s)</Link> : null}
-          {['FAILED', 'PARTIALLY_COMPLETED', 'CANCELLED'].includes(data.status) ? (
+          {['FAILED', 'PARTIALLY_COMPLETED', 'NEEDS_CONFIGURATION'].includes(data.status) ? (
             <button type="button" className="btn-secondary" onClick={() => retry.mutate()} disabled={retry.isPending}>
               {retry.isPending ? 'Queueing…' : 'Retry job'}
             </button>
@@ -71,6 +71,20 @@ export default function JobDetailPage() {
 
       {data.errorMessage ? (
         <ErrorState code={data.errorCode ?? 'PIPELINE_ERROR'} message={data.errorMessage} />
+      ) : null}
+
+      {data.status === 'NEEDS_CONFIGURATION' ? (
+        <div className="rounded-xl2 border border-caution/30 bg-caution-soft px-4 py-3 text-sm text-caution">
+          <p className="font-medium">This job is paused until the deployment is configured.</p>
+          <p className="mt-1 leading-relaxed">
+            Fix what the message above names (for a YouTube source that usually means installing{' '}
+            <code className="kbd">yt-dlp</code> on the API host or setting <code className="kbd">YTDLP_PATH</code>), then press{' '}
+            <strong>Retry job</strong>. The retry budget is not consumed by configuration pauses.
+          </p>
+          <Link href="/create" className="mt-2 inline-flex text-[13px] font-semibold underline">
+            Back to the project builder
+          </Link>
+        </div>
       ) : null}
 
       <Card>

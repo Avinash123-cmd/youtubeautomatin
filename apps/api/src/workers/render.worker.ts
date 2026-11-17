@@ -293,7 +293,8 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
     where: { workspaceId: job.workspaceId, platform: { in: configuration.platforms }, status: 'CONNECTED', publishingEnabled: true },
   });
 
-  await prisma.$transaction(async (tx) => {
+  const queued = await prisma.$transaction(async (tx) => {
+    let created = 0;
     for (const clip of ready) {
       for (const platform of configuration.platforms) {
         const account = accounts.find((candidate) => candidate.platform === platform);
@@ -322,13 +323,37 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
           queue: 'clipforge.publish',
           payload: { publishingJobId: record.id },
         });
+        created += 1;
       }
     }
+    return created;
   });
+
+  // Auto-publishing was requested but every selected platform lost its account (or its publishing
+  // flag) between submit and render. Queuing nothing and then waiting for a confirmation that can
+  // never arrive would leave the job in PUBLISHING forever, so finish it with the reason instead.
+  if (queued === 0) {
+    const skipped = configuration.platforms.filter(
+      (platform) => !accounts.some((account) => account.platform === platform),
+    );
+    await transitionJob(jobId, failed.length ? 'PARTIALLY_COMPLETED' : 'COMPLETED', {
+      progressPercent: 100,
+      progressDetail: `Clips ready, nothing queued: no connected account with publishing enabled for ${(skipped.length ? skipped : configuration.platforms).join(', ')}`,
+      resultSummary: {
+        clipsReady: ready.length,
+        clipsFailed: failed.length,
+        publishing: 'skipped',
+        skippedPlatforms: skipped.length ? skipped : configuration.platforms,
+      } as Prisma.InputJsonValue,
+      workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
+    });
+    runtime.logger.warn(`job ${jobId}: auto-publish requested but no eligible account for ${configuration.platforms.join(', ')}`);
+    return;
+  }
 
   await transitionJob(jobId, 'PUBLISHING_QUEUED', {
     progressPercent: 92,
-    progressDetail: `Publishing jobs queued for ${configuration.platforms.join(', ')}`,
+    progressDetail: `Queued ${queued} publishing job(s) for ${configuration.platforms.join(', ')}`,
     workerId: currentLeaseOwner(runtime.workerId), expectedLeaseOwner: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });

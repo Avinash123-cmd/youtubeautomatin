@@ -252,6 +252,7 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
   const [scheduleAt, setScheduleAt] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [queued, setQueued] = useState<string | null>(null);
   const publishing = usePublishing();
   const accounts = useAccounts();
   const enqueue = useMutation({
@@ -266,6 +267,8 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
       }),
     onSuccess: () => {
       setError(null);
+      setQueued(`Queued for ${selectedPlatforms.map((platform) => (platform === 'YOUTUBE' ? 'YouTube Shorts' : 'Instagram Reels')).join(' and ')}.`);
+      setSelectedPlatforms([]);
       void client.invalidateQueries({ queryKey: ['publishing'] });
       void client.invalidateQueries({ queryKey: ['clip', clipId] });
     },
@@ -315,6 +318,14 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
         <input type="datetime-local" className="input" value={scheduleAt} onChange={(event) => setScheduleAt(event.target.value)} />
       </Field>
       {error ? <ErrorState message={error} /> : null}
+      {queued ? (
+        <p className="rounded-lg bg-positive-soft px-3 py-2 text-[13px] text-positive">
+          {queued}{' '}
+          <Link href="/publishing" className="font-medium underline">
+            Track it in Publishing
+          </Link>
+        </p>
+      ) : null}
       <button
         type="button"
         className="btn-primary"

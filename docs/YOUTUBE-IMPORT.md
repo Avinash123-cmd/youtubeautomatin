@@ -100,3 +100,22 @@ feature is used. If you only want users to process their own footage, set
 | `YOUTUBE_SOURCE_TOO_LARGE` | file above the configured cap | raise `YOUTUBE_IMPORT_MAX_FILESIZE_MB` or the workspace limit |
 | `YOUTUBE_SOURCE_UNAVAILABLE` | private, removed or region-blocked | nothing to retry; choose another source |
 | Download stalls at 0% | outbound network blocked | check egress/proxy settings |
+
+## What has been run, and what has not
+
+Honest verification record for this feature. Anything not listed as executed was **not** executed.
+
+| Check | Command / method | Result |
+| --- | --- | --- |
+| TypeScript (API) | `npx tsc -p apps/api/tsconfig.json --noEmit` | clean |
+| TypeScript (dashboard) | `cd apps/web && npx tsc --noEmit` | clean |
+| Lint | `cd apps/web && npx eslint .` | clean |
+| Unit suite | `npx vitest run --config tests/vitest.config.ts` | 70 files, 556 passed, 3 skipped |
+| Dashboard build | `cd apps/web && npx next build` | succeeded, all routes compiled |
+| Structure gate | `bash scripts/check-structure.sh` | 82 checks passed, 0 failed |
+| YAML (compose + Render) | parsed with PyYAML | valid |
+
+Not executable in the authoring environment, therefore unproven there: a real `yt-dlp` download
+(no `yt-dlp`, no `ffmpeg`), an ffprobe validation of downloaded media, an actual YouTube upload and
+an actual Instagram Reel publish. Those paths are exercised the first time you run the stack with
+credentials; the failure branches they can hit are the ones in the troubleshooting table above.

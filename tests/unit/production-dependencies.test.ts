@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 const db = vi.hoisted(() => ({ $connect: vi.fn(), $disconnect: vi.fn() }));
-const connections = vi.hoisted(() => [] as Array<{ on: ReturnType<typeof vi.fn>; quit: ReturnType<typeof vi.fn> }>);
+const connections = vi.hoisted(() => [] as Array<{ on: ReturnType<typeof vi.fn>; quit: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }>);
 vi.mock('@clipforge/database', () => ({ prisma: db }));
 vi.mock('ioredis', () => ({ default: vi.fn(function () {
-  const connection = { on: vi.fn(), quit: vi.fn().mockResolvedValue('OK') };
+  const connection = { on: vi.fn(), quit: vi.fn().mockResolvedValue('OK'), disconnect: vi.fn() };
   connections.push(connection); return connection;
 }) }));
 vi.mock('../../apps/api/src/common/env', () => ({ env: { REDIS_URL: 'redis://private-secret@host', REDIS_PREFIX: 'clipforge' } }));
@@ -11,10 +11,11 @@ import { Logger } from '@nestjs/common';
 import { PrismaService } from '../../apps/api/src/common/prisma.service';
 import { RedisService } from '../../apps/api/src/common/services/redis.service';
 afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); connections.length = 0; });
-it('fails database initialization explicitly, preserving the cause and existing disconnect hook', async () => {
+it('fails database initialization with sanitized guidance and preserves the disconnect hook', async () => {
   const cause = new Error('connection refused'); db.$connect.mockRejectedValueOnce(cause);
   const service = new PrismaService();
-  await expect(service.onModuleInit()).rejects.toMatchObject({ message: expect.stringContaining('PostgreSQL initialization failed'), cause });
+  await expect(service.onModuleInit()).rejects.toMatchObject({ message: expect.stringContaining('PostgreSQL startup check failed') });
+  try { await service.onModuleInit(); } catch (error) { expect(error).not.toHaveProperty('cause'); }
   await service.onModuleDestroy(); expect(db.$disconnect).toHaveBeenCalled();
 });
 it('reports Redis failures without exposing credentials and still closes both clients', async () => {

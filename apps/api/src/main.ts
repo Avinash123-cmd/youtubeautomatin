@@ -14,6 +14,7 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
 import { AppLogger, workerLogger } from './common/services/logger.service';
 import { env, loadEnv } from './common/env';
 import { listenForApi } from './common/http-listener';
+import { startupFailureMessage } from './common/startup-error';
 import { buildHelmetOptions } from './common/security-headers';
 
 let application: NestExpressApplication | undefined;
@@ -27,7 +28,7 @@ async function bootstrap() {
   const closeFromParent = () => {
     if (closing) return;
     closing = true;
-    void app.close().then(() => process.exit(0)).catch(error => { console.error('[fatal] API shutdown failed:', error); process.exit(1); });
+    void app.close().then(() => process.exit(0)).catch(error => { console.error('[fatal] API shutdown failed; check dependency availability.'); process.exit(1); });
   };
   process.on('message', message => {
     if (message && typeof message === 'object' && 'type' in message && message.type === 'clipforge:shutdown') closeFromParent();
@@ -85,7 +86,7 @@ if (require.main === module) void bootstrap().catch(async (error: unknown) => {
     console.error(`[fatal] Port ${env.PORT ?? env.API_PORT} (PORT takes precedence over API_PORT) is already in use. Stop only the API instance you own, or inspect the listener PID before taking action. Do not run dev:api and start:api together. No process was killed and the port was not changed.`);
   }
   // Fail loudly: a misconfigured environment must never start a half-working API.
-  console.error('[fatal] API failed to start:', error instanceof Error ? (error.stack ?? error.message) : error);
+  console.error('[fatal]', startupFailureMessage(error));
   const deadline = setTimeout(() => process.exit(1), 10000);
   try { await application?.close(); } catch { console.error('[fatal] API resource cleanup failed.'); }
   clearTimeout(deadline);

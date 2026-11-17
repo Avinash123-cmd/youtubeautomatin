@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { NextConfig } from 'next';
+import { apiOrigin } from './lib/api-origin';
 
 /**
  * The browser only ever talks to this Next.js origin. /api and /media are proxied to the NestJS
@@ -30,15 +31,8 @@ function fromFile(): { origin: string | null; note: string | null } {
     return { origin: value.length > 0 ? value : null, note: null };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { origin: null, note: null };
-    return { origin: null, note: `api-target.json could not be read (${(error as Error).message}).` };
+    return { origin: null, note: 'api-target.json could not be parsed.' };
   }
-}
-
-/** Accept what people actually paste: a trailing slash, or `…/api` (which would give /api/api/…). */
-function normalise(raw: string): string {
-  let value = raw.trim().replace(/\/+$/, '');
-  if (/\/api$/i.test(value)) value = value.slice(0, -4).replace(/\/+$/, '');
-  return value;
 }
 
 function warn(lines: string[]): void {
@@ -52,35 +46,18 @@ const fromJson = fromEnv || !hosted ? { origin: null, note: null } : fromFile();
 let target: string;
 let problem: string | null = null;
 
-const isLocalAddress = (value: string) => /127\.0\.0\.1|localhost|0\.0\.0\.0/.test(value);
-
 if (fromEnv) {
-  target = normalise(fromEnv);
-  if (!/^https?:\/\//.test(target)) {
-    problem = `API_INTERNAL_URL is "${fromEnv}", which is not a URL.`;
-    target = SENTINEL;
-  } else if (hosted && isLocalAddress(target)) {
-    // Only a *hosted* build is wrong to point at localhost; a local build is supposed to.
-    problem = `API_INTERNAL_URL points at "${fromEnv}", which is the build container, not a reachable API.`;
-    target = SENTINEL;
-  } else if (target !== fromEnv) {
-    warn([`API_INTERNAL_URL "${fromEnv}" was normalised to "${target}" (trailing slash or /api suffix dropped).`]);
-  }
+  const origin = apiOrigin(fromEnv, hosted);
+  target = origin ?? SENTINEL;
+  if (!origin) problem = 'API_INTERNAL_URL must be an HTTP(S) origin without credentials, query or path; hosted targets must use non-loopback HTTPS.';
 } else if (fromJson.origin) {
-  target = normalise(fromJson.origin);
-  if (!/^https?:\/\//.test(target) || (hosted && isLocalAddress(target))) {
-    problem = `api-target.json holds "${fromJson.origin}", which is not a public http(s) origin.`;
-    target = SENTINEL;
-  } else if (fromJson.note) {
-    warn([fromJson.note]);
-  } else {
-    warn([`Using the API origin committed in apps/web/api-target.json: ${target}`]);
-  }
+  const origin = apiOrigin(fromJson.origin, hosted);
+  target = origin ?? SENTINEL;
+  if (!origin) problem = 'api-target.json must contain a public HTTPS origin without credentials, query or path.';
+  else warn([`Using the API origin committed in apps/web/api-target.json: ${origin}`]);
 } else {
   target = hosted ? SENTINEL : LOCAL_DEFAULT;
-  if (hosted) {
-    problem = 'Neither API_INTERNAL_URL nor apps/web/api-target.json gave an API origin.';
-  }
+  if (hosted) problem = 'Neither API_INTERNAL_URL nor apps/web/api-target.json gave an API origin.';
 }
 
 if (problem) {

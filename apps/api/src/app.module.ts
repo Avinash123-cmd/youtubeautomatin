@@ -1,3 +1,4 @@
+import { DatabaseModule } from './common/database.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AccountsModule } from './accounts/accounts.module';
@@ -16,10 +17,10 @@ import { SystemModule } from './system/system.module';
 import { UsageModule } from './usage/usage.module';
 import { WorkspaceModule } from './workspace/workspace.module';
 import { NotificationsModule } from './notifications/notifications.module';
-import { PrismaService } from './common/prisma.service';
 
 @Module({
   imports: [
+    DatabaseModule,
     AuthModule,
     StorageModule,
     QueuesModule,
@@ -35,7 +36,6 @@ import { PrismaService } from './common/prisma.service';
   ],
   controllers: [MediaController],
   providers: [
-    PrismaService,
     // Order matters: the session guard resolves who the caller is, so the limiter can throttle per
     // user instead of per NAT address, and CSRF runs last on an already-identified request.
     { provide: APP_GUARD, useClass: SessionAuthGuard },

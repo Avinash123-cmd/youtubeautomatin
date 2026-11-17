@@ -20,7 +20,7 @@ export class SystemController {
 
   @Get('health')
   @Public()
-  @ApiOperation({ summary: 'Core readiness: PostgreSQL and Redis (503 when unavailable)' })
+  @ApiOperation({ summary: 'Core readiness: PostgreSQL, Redis and storage (503 when unavailable)' })
   async health(@Res({ passthrough: true }) res: Response) {
     const health = await this.system.health();
     res.setHeader('Cache-Control', 'no-store');

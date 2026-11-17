@@ -4,6 +4,8 @@
  * operator sees the complete list instead of one-at-a-time errors.
  */
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
+import { createOriginPolicy, normalizeOrigin } from './origin-policy';
 import { isTelegramWebhookUrl } from './telegram-webhook-url';
 
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
@@ -64,8 +66,8 @@ export const envSchema = z.object({
   VIDEO_PROCESSOR_API_KEY: z.string().min(8),
 
   // ---------------------------- Firebase Auth ----------------------------
-  // Optional: when absent, email+password keeps working and the dashboard hides Google sign-in.
-  // Server-side verification needs a service account; the web config below is public by design.
+  // Legacy configuration retained for history. The active auth module does not register
+  // Firebase/password controllers and these settings cannot enable alternate sign-in.
   FIREBASE_PROJECT_ID: z.string().optional(),
   FIREBASE_CLIENT_EMAIL: z.string().optional(),
   FIREBASE_PRIVATE_KEY: z.string().optional(),
@@ -209,6 +211,19 @@ export function loadEnv(): AppEnv {
   // Storage driver specific requirements, checked here rather than defaulted.
   const env = parsed.data;
   validateProductionConnections(env);
+  const appOrigin = normalizeOrigin(env.APP_URL);
+  if (!appOrigin) throw new Error('APP_URL must be an HTTP(S) origin without credentials, path, query or fragment.');
+  env.APP_URL = appOrigin;
+  const allowedOrigin = createOriginPolicy(env.ALLOWED_ORIGINS);
+  if (!allowedOrigin(appOrigin)) throw new Error('ALLOWED_ORIGINS must include the APP_URL frontend origin.');
+  try { new Intl.DateTimeFormat('en', { timeZone: env.TIMEZONE }); }
+  catch { throw new Error('TIMEZONE must be a supported IANA timezone, for example Asia/Kolkata or UTC.'); }
+  if (env.NODE_ENV === 'production') {
+    if (!isAbsolute(env.WORK_DIR)) throw new Error('WORK_DIR must be an absolute path in production, shared at the same path by media services.');
+    if (env.STORAGE_DRIVER === 'local' && env.STORAGE_LOCAL_ROOT && !isAbsolute(env.STORAGE_LOCAL_ROOT)) throw new Error('STORAGE_LOCAL_ROOT must be an absolute persistent-disk path in production.');
+    if (!/^[A-Za-z0-9+/]{43}=$/.test(env.CREDENTIAL_ENCRYPTION_KEY) || Buffer.from(env.CREDENTIAL_ENCRYPTION_KEY, 'base64').length !== 32) throw new Error('CREDENTIAL_ENCRYPTION_KEY must be a base64-encoded 32-byte key (openssl rand -base64 32). Preserve the existing key to decrypt existing credentials.');
+  }
+
   if (!env.S3_PUBLIC_BASE_URL && env.STORAGE_PUBLIC_BASE_URL) {
     env.S3_PUBLIC_BASE_URL = env.STORAGE_PUBLIC_BASE_URL;
   }

@@ -143,6 +143,31 @@ export function isYouTubeUrl(url: string): boolean {
   return parseYouTubeVideoId(url) !== null;
 }
 
+export interface NormalizedYouTubeUrl {
+  videoId: string;
+  /** Canonical `https://www.youtube.com/watch?v=<id>`; safe to hand to a downloader. */
+  canonicalUrl: string;
+  /** Short share link used for display only. */
+  shortUrl: string;
+}
+
+/**
+ * Normalizes every supported YouTube URL shape to one canonical, allow-listed form.
+ *
+ * Downstream code never receives raw user input: the ingest step builds its argument vector from
+ * `canonicalUrl` alone, so query parameters such as `list=`, timestamps or tracking strings cannot
+ * change what is downloaded.
+ */
+export function normalizeYouTubeUrl(url: string): NormalizedYouTubeUrl | null {
+  const videoId = parseYouTubeVideoId(url);
+  if (!videoId) return null;
+  return {
+    videoId,
+    canonicalUrl: `https://www.youtube.com/watch?v=${videoId}`,
+    shortUrl: `https://youtu.be/${videoId}`,
+  };
+}
+
 /** Strict reference parsing only; no request or download is performed. */
 export function parseYouTubeVideoId(url: string): string | null {
   try {

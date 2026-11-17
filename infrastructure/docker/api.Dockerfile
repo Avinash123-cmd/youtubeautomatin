@@ -39,6 +39,16 @@ RUN npm run generate -w @clipforge/database \
 
 # ---- runtime --------------------------------------------------------------------
 FROM base AS runtime
+# yt-dlp is a Python zipapp and needs ffmpeg to merge the separate video/audio streams that
+# YouTube serves. Both are runtime dependencies of the YouTube ingest step, not build tools.
+ARG YTDLP_VERSION=latest
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 ffmpeg curl \
+ && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/${YTDLP_VERSION}/download/yt-dlp" -o /usr/local/bin/yt-dlp \
+ && chmod 0755 /usr/local/bin/yt-dlp \
+ && /usr/local/bin/yt-dlp --version \
+ && apt-get purge -y --auto-remove curl \
+ && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 clipforge && useradd --uid 10001 --gid clipforge --create-home clipforge
 RUN mkdir -p /data/storage /data/work && chown -R clipforge:clipforge /data
 ENV NODE_ENV=production

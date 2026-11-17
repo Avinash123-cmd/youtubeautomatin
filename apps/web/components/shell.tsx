@@ -10,22 +10,22 @@ import { Badge } from './ui';
 
 const NO_SESSION: SessionResponse = { authenticated: false };
 
-type NavItem = { href: string; label: string; short: string; icon: string };
+type NavItem = { href: string; label: string; short: string; icon: string; group: 'Workspace' | 'Library' | 'Publishing' | 'Account' };
 
 const NAV: NavItem[] = [
-  { href: '/', label: 'Dashboard', short: 'Home', icon: 'M3 12h6v9H3zM10 3h4v18h-4zM15 8h6v13h-6z' },
-  { href: '/videos', label: 'Video library', short: 'Videos', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' },
-  { href: '/create', label: 'Create project', short: 'Create', icon: 'M12 5v14M5 12h14' },
-  { href: '/jobs', label: 'Processing', short: 'Jobs', icon: 'M12 6v6l4 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z' },
-  { href: '/clips', label: 'Clip library', short: 'Clips', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' },
-  { href: '/publishing', label: 'Publishing', short: 'Publish', icon: 'M4 12l16-8-6 16-3-6z' },
-  { href: '/calendar', label: 'Content calendar', short: 'Calendar', icon: 'M4 5h16v16H4zM4 10h16M8 3v4M16 3v4' },
-  { href: '/accounts', label: 'Connected accounts', short: 'Accounts', icon: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21a8 8 0 0 1 16 0' },
-  { href: '/brand', label: 'Brand studio', short: 'Brand', icon: 'M12 3l2.6 5.6 6.1.8-4.4 4.3 1.1 6-5.4-3-5.4 3 1.1-6L3.3 9.4l6.1-.8z' },
-  { href: '/security', label: 'Security', short: 'Security', icon: 'M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7zM9 12l2 2 4-4' },
-  { href: '/settings', label: 'Settings', short: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14 3h-4l-.6 2.7a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2L10 21h4l.6-2.7a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z' },
-  { href: '/activity', label: 'Activity log', short: 'Activity', icon: 'M4 6h16M4 12h16M4 18h10' },
-  { href: '/admin', label: 'System admin', short: 'Admin', icon: 'M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7z' },
+  { href: '/', label: 'Dashboard', short: 'Home', icon: 'M3 12h6v9H3zM10 3h4v18h-4zM15 8h6v13h-6z' , group: 'Workspace' },
+  { href: '/videos', label: 'Video library', short: 'Videos', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' , group: 'Library' },
+  { href: '/create', label: 'Create project', short: 'Create', icon: 'M12 5v14M5 12h14' , group: 'Workspace' },
+  { href: '/jobs', label: 'Processing', short: 'Jobs', icon: 'M12 6v6l4 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z' , group: 'Workspace' },
+  { href: '/clips', label: 'Clip library', short: 'Clips', icon: 'M4 5h16v14H4zM9 9l6 3-6 3z' , group: 'Library' },
+  { href: '/publishing', label: 'Publishing', short: 'Publish', icon: 'M4 12l16-8-6 16-3-6z' , group: 'Publishing' },
+  { href: '/calendar', label: 'Content calendar', short: 'Calendar', icon: 'M4 5h16v16H4zM4 10h16M8 3v4M16 3v4' , group: 'Publishing' },
+  { href: '/accounts', label: 'Connected accounts', short: 'Accounts', icon: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM4 21a8 8 0 0 1 16 0' , group: 'Account' },
+  { href: '/brand', label: 'Brand studio', short: 'Brand', icon: 'M12 3l2.6 5.6 6.1.8-4.4 4.3 1.1 6-5.4-3-5.4 3 1.1-6L3.3 9.4l6.1-.8z' , group: 'Account' },
+  { href: '/security', label: 'Security', short: 'Security', icon: 'M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7zM9 12l2 2 4-4' , group: 'Account' },
+  { href: '/settings', label: 'Settings', short: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14 3h-4l-.6 2.7a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2L10 21h4l.6-2.7a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z' , group: 'Account' },
+  { href: '/activity', label: 'Activity log', short: 'Activity', icon: 'M4 6h16M4 12h16M4 18h10' , group: 'Account' },
+  { href: '/admin', label: 'System admin', short: 'Admin', icon: 'M12 3l8 4v5c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V7z' , group: 'Account' },
 ];
 
 /** Routes shown in the phone bottom bar; everything else lives behind "More". */
@@ -136,40 +136,60 @@ export function Shell({ children, developmentBypass = false }: { children: React
   const signOut = () => logout.mutate(undefined, { onSuccess: () => router.replace('/login') });
   const workspaceBlock = (
     <>
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ink text-[13px] font-bold text-white">CF</span>
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-gradient text-[13px] font-bold text-white shadow-glow">CF</span>
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold tracking-tight text-ink">ClipForge AI</p>
-        <p className="truncate text-[11px] text-ink-faint">{session.workspace?.name}</p>
+        <p className="truncate text-[11px] text-ink-faint">{session.workspace?.name ?? 'Workspace'}</p>
       </div>
     </>
   );
 
   return (
     <div className="flex min-h-[100dvh]">
-      <aside className="sticky top-0 hidden h-[100dvh] w-[248px] shrink-0 flex-col border-r border-line bg-white lg:flex">
+      <aside className="sticky top-0 hidden h-[100dvh] w-[256px] shrink-0 flex-col border-r border-line bg-white lg:flex">
         <div className="flex items-center gap-2.5 px-5 py-5">{workspaceBlock}</div>
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-4" aria-label="Main">
-          {visibleNav.map((item) => {
-            const active = isActive(item.href, pathname);
+        <nav className="slim-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-4" aria-label="Main">
+          {(['Workspace', 'Library', 'Publishing', 'Account'] as const).map((group) => {
+            const items = visibleNav.filter((item) => item.group === group);
+            if (items.length === 0) return null;
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                aria-current={active ? 'page' : undefined}
-                className={clsx(
-                  'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition',
-                  active ? 'bg-accent-soft text-accent-strong' : 'text-ink-soft hover:bg-surface-muted hover:text-ink',
-                )}
-              >
-                <NavIcon d={item.icon} active={active} />
-                {item.label}
-              </Link>
+              <div key={group}>
+                <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-faint">{group}</p>
+                <div className="space-y-0.5">
+                  {items.map((item) => {
+                    const active = isActive(item.href, pathname);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        aria-current={active ? 'page' : undefined}
+                        className={clsx(
+                          'group flex items-center gap-2.5 rounded-xl px-3 py-2 text-[13px] font-medium transition',
+                          active ? 'bg-accent-soft text-accent-strong' : 'text-ink-soft hover:bg-surface-muted hover:text-ink',
+                        )}
+                      >
+                        <span className={clsx('transition', active ? 'text-accent' : 'text-ink-faint group-hover:text-ink-soft')}>
+                          <NavIcon d={item.icon} active={active} />
+                        </span>
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
             );
           })}
         </nav>
         <div className="border-t border-line px-4 py-4">
-          <p className="truncate text-[13px] font-medium text-ink">{session.user?.displayName}</p>
-          <p className="truncate text-xs text-ink-faint">{session.user?.email}</p>
+          <div className="flex items-center gap-2.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-sunken text-[11px] font-semibold uppercase text-ink-soft">
+              {(session.user?.displayName ?? '?').slice(0, 2)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13px] font-medium text-ink">{session.user?.displayName}</p>
+              <p className="truncate text-xs text-ink-faint">{session.user?.email}</p>
+            </div>
+          </div>
           <button type="button" onClick={signOut} disabled={developmentAccess} title={developmentAccess ? 'Set AUTH_BYPASS=false and restart both servers to restore login' : undefined} className="btn-ghost mt-2 w-full justify-start px-2 text-[13px]">
             {developmentAccess ? 'Not signed in (dev mode)' : 'Sign out'}
           </button>
@@ -207,23 +227,34 @@ export function Shell({ children, developmentBypass = false }: { children: React
                 </svg>
               </button>
             </div>
-            <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-4" aria-label="Main">
-              {visibleNav.map((item) => {
-                const active = isActive(item.href, pathname);
+            <nav className="slim-scroll flex-1 space-y-4 overflow-y-auto px-3 pb-4" aria-label="Main">
+              {(['Workspace', 'Library', 'Publishing', 'Account'] as const).map((group) => {
+                const items = visibleNav.filter((item) => item.group === group);
+                if (items.length === 0) return null;
                 return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    aria-current={active ? 'page' : undefined}
-                    onClick={close}
-                    className={clsx(
-                      'flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium transition',
-                      active ? 'bg-accent-soft text-accent-strong' : 'text-ink-soft hover:bg-surface-muted hover:text-ink',
-                    )}
-                  >
-                    <NavIcon d={item.icon} active={active} />
-                    {item.label}
-                  </Link>
+                  <div key={group}>
+                    <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-faint">{group}</p>
+                    <div className="space-y-0.5">
+                      {items.map((item) => {
+                        const active = isActive(item.href, pathname);
+                        return (
+                          <Link
+                            key={item.href}
+                            href={item.href}
+                            aria-current={active ? 'page' : undefined}
+                            onClick={close}
+                            className={clsx(
+                              'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition',
+                              active ? 'bg-accent-soft text-accent-strong' : 'text-ink-soft hover:bg-surface-muted hover:text-ink',
+                            )}
+                          >
+                            <NavIcon d={item.icon} active={active} />
+                            {item.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </div>
                 );
               })}
             </nav>
@@ -239,7 +270,7 @@ export function Shell({ children, developmentBypass = false }: { children: React
       ) : null}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-white/90 px-4 py-3 backdrop-blur sm:px-6">
+        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line/80 bg-white/85 px-4 py-3 backdrop-blur-md sm:px-6">
           <button
             ref={menuButtonRef}
             type="button"
@@ -254,7 +285,10 @@ export function Shell({ children, developmentBypass = false }: { children: React
             </svg>
           </button>
           <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-            <span className="truncate text-sm font-semibold text-ink lg:hidden">ClipForge AI</span>
+            <span className="flex items-center gap-2 lg:hidden">
+              <span className="grid h-7 w-7 place-items-center rounded-lg bg-brand-gradient text-[10px] font-bold text-white">CF</span>
+              <span className="truncate text-sm font-semibold text-ink">ClipForge AI</span>
+            </span>
             <Badge tone={processingReady ? 'positive' : 'caution'} className="shrink-0">
               <span className="hidden sm:inline">{processingReady ? 'Configuration complete' : 'Configuration required'}</span>
               <span className="sm:hidden">{processingReady ? 'Ready' : 'Setup'}</span>
@@ -270,7 +304,7 @@ export function Shell({ children, developmentBypass = false }: { children: React
           </div>
           <div className="flex shrink-0 items-center gap-2 text-xs text-ink-faint">
             <span className="hidden lg:inline">{session.workspace?.timezone}</span>
-            <Link href="/create" className="btn-primary !px-3 !py-1.5 text-[13px]">
+            <Link href="/create" className="btn-gradient !px-3.5 !py-2 text-[13px]">
               <span className="hidden sm:inline">New project</span>
               <span aria-hidden="true" className="sm:hidden">
                 +
@@ -280,7 +314,7 @@ export function Shell({ children, developmentBypass = false }: { children: React
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1180px] flex-1 px-4 pb-24 pt-5 sm:px-6 sm:py-7 lg:pb-7">
+        <main className="mx-auto w-full max-w-[1200px] flex-1 px-4 pb-24 pt-5 sm:px-6 sm:py-8 lg:pb-8">
           {developmentAccess ? (
             <p role="status" className="mb-5 rounded-xl bg-caution-soft p-4 text-sm">
               Development authentication bypass — not signed in. Dedicated local workspace only.

@@ -79,6 +79,38 @@ export async function transitionJob(jobId: string, to: JobState, options: Transi
   return prisma.$transaction(tx => transitionJobInTransaction(tx, jobId, to, options));
 }
 
+export interface ProgressUpdateOptions {
+  progressPercent?: number;
+  progressDetail?: string;
+  leaseSeconds?: number;
+  /** When supplied, only the lease owner may write (a stale worker is ignored). */
+  expectedLeaseOwner?: string;
+}
+
+/**
+ * Writes progress inside the current stage without changing state.
+ *
+ * `transitionJob` is a no-op when `from === to`, which is correct for the state machine but means
+ * long-running work inside one stage (a YouTube download, for example) had no way to report
+ * progress or renew its lease. This updates only the progress fields + heartbeat.
+ */
+export async function updateJobProgress(jobId: string, options: ProgressUpdateOptions): Promise<number> {
+  const now = new Date();
+  const result = await prisma.processingJob.updateMany({
+    where: {
+      id: jobId,
+      ...(options.expectedLeaseOwner ? { workerId: options.expectedLeaseOwner } : {}),
+    },
+    data: {
+      ...(options.progressPercent !== undefined ? { progressPercent: Math.max(0, Math.min(100, Math.round(options.progressPercent))) } : {}),
+      ...(options.progressDetail !== undefined ? { progressDetail: options.progressDetail.slice(0, 500) } : {}),
+      heartbeatAt: now,
+      ...(options.leaseSeconds ? { leaseExpiresAt: new Date(now.getTime() + options.leaseSeconds * 1000) } : {}),
+    },
+  });
+  return result.count;
+}
+
 /** Serialize state transitions with lease claims/cancellation on the same PostgreSQL row.
  * Recovery can compose a transition and its outbox intents in one existing transaction.
  */

@@ -109,7 +109,8 @@ const csp = [
   // dev needs eval for React Fast Refresh; production must not have it.
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https://*.googleusercontent.com https://www.gstatic.com https://telesco.pe https://*.telesco.pe",
+  // i.ytimg.com/img.youtube.com serve the source thumbnails of a pasted YouTube URL.
+  "img-src 'self' data: blob: https://*.googleusercontent.com https://www.gstatic.com https://telesco.pe https://*.telesco.pe https://i.ytimg.com https://img.youtube.com",
   "font-src 'self' data:",
   "media-src 'self' blob:",
   `connect-src 'self' https://*.r2.cloudflarestorage.com https://*.amazonaws.com ${uploadConnectOrigins.join(' ')}`.trim(),

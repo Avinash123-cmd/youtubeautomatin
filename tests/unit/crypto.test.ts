@@ -7,6 +7,9 @@ let hmacToken: (value: string, purpose?: string) => string;
 
 beforeAll(async () => {
   process.env.CREDENTIAL_ENCRYPTION_KEY = crypto.randomBytes(32).toString('base64');
+  // The HMAC helper requires a >=32 character secret. A unit test must not depend on the caller's
+  // shell having one exported, otherwise it passes locally and fails on a clean checkout.
+  process.env.SESSION_SECRET ||= crypto.randomBytes(32).toString('hex');
   const module = await import('@clipforge/database');
   encryptSecret = module.encryptSecret;
   decryptSecret = module.decryptSecret;
@@ -38,7 +41,8 @@ describe('credential encryption (AES-256-GCM)', () => {
     const previous = process.env.SESSION_SECRET;
     delete process.env.SESSION_SECRET;
     expect(() => hmacToken('session-token')).toThrow();
-    if (previous !== undefined) process.env.SESSION_SECRET = previous;
+    // Always restore a usable value: a later test in this file depends on it.
+    process.env.SESSION_SECRET = previous ?? crypto.randomBytes(32).toString('hex');
   });
 
   it('HMACs are deterministic, purpose-scoped and never contain the input', () => {

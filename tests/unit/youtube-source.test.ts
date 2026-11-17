@@ -1,11 +1,18 @@
 import 'reflect-metadata';
 import { afterEach, expect, it, vi } from 'vitest';
 import { parseYouTubeVideoId } from '@clipforge/validation';
-vi.mock('../../apps/api/src/common/env', () => ({ env: { UPLOAD_PART_SIZE_MIB: 8, YOUTUBE_DATA_API_KEY: 'test-only-key' } }));
+vi.mock('../../apps/api/src/common/env', () => ({ env: envMock.env }));
 import { SourcesService } from '../../apps/api/src/sources/sources.service';
-const service = new SourcesService({} as never, {} as never, {} as never);
+const youtube = { preview: vi.fn() };
+const envMock = vi.hoisted(() => ({ env: { UPLOAD_PART_SIZE_MIB: 8, YOUTUBE_DATA_API_KEY: 'test-only-key' as string | undefined, YOUTUBE_IMPORT_ENABLED: false as boolean } }));
+const service = new SourcesService({} as never, {} as never, {} as never, youtube as never);
 const id = 'dQw4w9WgXcQ';
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  envMock.env.YOUTUBE_DATA_API_KEY = 'test-only-key';
+  envMock.env.YOUTUBE_IMPORT_ENABLED = false;
+  youtube.preview.mockReset();
+});
 it.each([`https://youtu.be/${id}`, `https://www.youtube.com/watch?v=${id}&t=12`, `https://m.youtube.com/shorts/${id}`, `https://youtube.com/embed/${id}`, `https://youtube.com/live/${id}`])('parses official video reference %s', url => { expect(parseYouTubeVideoId(url)).toBe(id); });
 it.each([`https://evil.test/watch?v=${id}`, `https://youtube.com.evil.test/watch?v=${id}`, `https://user@youtube.com/watch?v=${id}`, `http://youtube.com/watch?v=${id}`, `https://youtube.com/watch?v=bad`, `https://youtu.be/${id}/extra`, `https://youtube.com/watch?v=${id}&v=aaaaaaaaaaa`])('rejects malformed or untrusted video reference %s', url => { expect(parseYouTubeVideoId(url)).toBeNull(); });
 it('uses only the official metadata endpoint and never promises download or transcript access', async () => {
@@ -30,4 +37,35 @@ it('rejects invalid URLs before any network request', async () => {
 it('surfaces remote failures without logging credentials or provider response bodies', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('sensitive remote error', { status: 403 })));
   await expect(service.inspectYouTube(`https://youtu.be/${id}`)).rejects.toMatchObject({ response: { code: 'YOUTUBE_LOOKUP_FAILED' } });
+});
+
+it('reports that a pasted URL is ingested by the pipeline when import is enabled', async () => {
+  envMock.env.YOUTUBE_IMPORT_ENABLED = true;
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [{ id, snippet: { title: 'T', description: '', channelTitle: 'C' }, contentDetails: { duration: 'PT1M' } }] }))));
+  const result = await service.inspectYouTube(`https://youtu.be/${id}`);
+  expect(result.originalMedia).toBe('AUTO_IMPORT');
+  expect(result.canonicalUrl).toBe(`https://www.youtube.com/watch?v=${id}`);
+  expect(result.message).toContain('Confirm you own or are authorised');
+});
+
+it('falls back to oEmbed (no API key) without downloading media', async () => {
+  envMock.env.YOUTUBE_DATA_API_KEY = undefined;
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ title: 'oEmbed title', author_name: 'Channel', thumbnail_url: 'https://i.ytimg.com/vi/x/hqdefault.jpg' })));
+  vi.stubGlobal('fetch', fetcher);
+  youtube.preview.mockResolvedValue({
+    videoId: id, canonicalUrl: `https://www.youtube.com/watch?v=${id}`, embedUrl: `https://www.youtube-nocookie.com/embed/${id}`,
+    watchUrl: `https://www.youtube.com/watch?v=${id}`, title: 'oEmbed title', author: 'Channel', authorUrl: null,
+    thumbnailUrl: 'https://i.ytimg.com/vi/x/hqdefault.jpg', durationSeconds: 62, source: 'oembed', available: true,
+  });
+  const result = await service.inspectYouTube(`https://www.youtube.com/shorts/${id}`);
+  expect(result.availability).toBe('AVAILABLE');
+  expect(result.metadata?.snippet.title).toBe('oEmbed title');
+  expect(result.transcript).toBe('NOT_RETRIEVED');
+  expect(youtube.preview).toHaveBeenCalledWith(`https://www.youtube.com/watch?v=${id}`);
+});
+
+it('rejects an untrusted URL before resolving a preview', async () => {
+  envMock.env.YOUTUBE_DATA_API_KEY = undefined;
+  await expect(service.inspectYouTube('https://evil.test/watch?v=aaaaaaaaaaa')).rejects.toMatchObject({ status: 400 });
+  expect(youtube.preview).not.toHaveBeenCalled();
 });

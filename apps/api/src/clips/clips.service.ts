@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException, Injectable } from '@nestjs/common';
+import { buildCues, plainText, toSrt, toVtt, wordsForWindow, type CaptionWord } from './captions';
 import { appendAuditLog, prisma } from '@clipforge/database';
 import type { updateClipMetadataSchema } from '@clipforge/validation';
 import type { z } from 'zod';
@@ -103,6 +104,52 @@ export class ClipsService {
         account: job.connectedAccount.displayName,
       })),
     };
+  }
+
+  /**
+   * Captions for one clip, derived from the stored word-level transcript of its source.
+   *
+   * Nothing is generated here beyond formatting: the timings are the ones Whisper produced, shifted
+   * to the clip's own timeline, so the file matches the burned-in captions.
+   */
+  async captions(id: string, ctx: RequestContext, format: 'srt' | 'vtt' | 'txt') {
+    const clip = await prisma.generatedClip.findFirst({
+      where: { id, workspaceId: ctx.workspaceId },
+      include: {
+        job: {
+          select: {
+            transcripts: { orderBy: { createdAt: 'desc' }, take: 1, include: { segments: { orderBy: { sequence: 'asc' } } } },
+          },
+        },
+      },
+    });
+    if (!clip) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Clip not found' });
+    const segments = clip.job.transcripts[0]?.segments ?? [];
+    if (segments.length === 0) {
+      throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'This clip has no transcript to build captions from' });
+    }
+    // `words` is JSON written by the transcription step; older jobs may have null or a non-array
+    // value, so the shape is checked rather than cast blindly.
+    const words: CaptionWord[] = segments.flatMap((segment) => {
+      const raw = segment.words as unknown;
+      if (!Array.isArray(raw)) return [];
+      return raw.filter(
+        (word): word is CaptionWord =>
+          typeof word === 'object' && word !== null &&
+          typeof (word as CaptionWord).word === 'string' &&
+          Number.isFinite((word as CaptionWord).start) &&
+          Number.isFinite((word as CaptionWord).end),
+      );
+    });
+    const cues = buildCues(wordsForWindow(words, clip.startSeconds, clip.endSeconds));
+    const base = (clip.title || 'clip').normalize('NFKC').replace(/[^\w\s.-]/g, '').replace(/\s+/g, '-').slice(0, 60) || 'clip';
+    if (format === 'txt') {
+      return { filename: `${base}.txt`, contentType: 'text/plain; charset=utf-8', body: `${plainText(cues)}\n` };
+    }
+    if (format === 'vtt') {
+      return { filename: `${base}.vtt`, contentType: 'text/vtt; charset=utf-8', body: toVtt(cues) };
+    }
+    return { filename: `${base}.srt`, contentType: 'application/x-subrip; charset=utf-8', body: toSrt(cues) };
   }
 
   async get(id: string, ctx: RequestContext) {

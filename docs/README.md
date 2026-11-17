@@ -12,6 +12,7 @@ Start here, then follow the one link that matches what you are doing.
 | setting it up locally | the root [README.md](../README.md), then [CONFIGURATION.md](CONFIGURATION.md) |
 | deploying | [DEPLOY-VERCEL.md](DEPLOY-VERCEL.md) (dashboard on Vercel, backend on Render) and [OPERATIONS.md](OPERATIONS.md) |
 | turning on optional integrations | [ADD-API-KEYS.md](ADD-API-KEYS.md), [TELEGRAM-NOTIFICATIONS.md](TELEGRAM-NOTIFICATIONS.md) (free, 2-minute setup) (Firebase/OIDC/password docs are historical; active login is Telegram-bot-only), [PLATFORM-SETUP.md](PLATFORM-SETUP.md) |
+| using or operating the paste-a-YouTube-URL flow | [YOUTUBE-IMPORT.md](YOUTUBE-IMPORT.md) — flow, safety rails, `yt-dlp` setup, troubleshooting |
 | reviewing what was verified, and what was not | [VERIFICATION.md](VERIFICATION.md) |
 | wondering what is still missing | [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) |
 | worried about secrets or tenancy | [SECURITY-NOTES.md](SECURITY-NOTES.md) |

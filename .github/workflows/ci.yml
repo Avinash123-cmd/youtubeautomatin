@@ -1,0 +1,74 @@
+# Continuous integration: the same gates that `npm run verify` runs locally, minus anything that
+# needs a live database. Nothing here deploys; deploys are documented in docs/OPERATIONS.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript:
+    name: TypeScript · structure, typecheck, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Structural check
+        run: npm run verify:structure
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+        env:
+          # `prisma generate` only needs a syntactically valid URL, never a reachable database.
+          DATABASE_URL: postgresql://user:password@127.0.0.1:5432/clipforge
+
+      - name: Build shared packages
+        run: npm run build:packages
+
+      - name: Typecheck every workspace
+        run: npm run typecheck
+
+      # `tests/unit/production-startup.test.ts` starts the *compiled* server on purpose (it proves
+      # `node dist/main.js` works without a watch supervisor), so the API must be built first.
+      - name: Build API
+        run: npm run build:api
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Dashboard production build
+        run: npm run build -w @clipforge/web
+        env:
+          API_INTERNAL_URL: https://api.example.com
+
+  python:
+    name: Python · renderer and engine logic
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: pip install -r tests/python/requirements.txt
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tests/python -v

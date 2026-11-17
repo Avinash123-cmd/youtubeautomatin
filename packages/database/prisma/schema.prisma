@@ -53,6 +53,8 @@ enum SourceKind {
   UPLOAD
   DIRECT_URL
   STORAGE_PROVIDER
+  /// Pasted YouTube watch URL, fetched by the ingest step of the pipeline before probing.
+  YOUTUBE
 }
 
 enum SourceStatus {
@@ -447,6 +449,10 @@ model SourceVideo {
   sourceUrl         String?      // direct URL import or YouTube reference URL
   youTubeReferenceId String?
   youTubeReferenceUrl String?
+  /// Resolved source metadata (oEmbed/Data API preview + yt-dlp info) captured at ingest time.
+  sourceMetadata    Json?
+  /// When the ingest step stored the original media for a non-upload source.
+  ingestedAt        DateTime?
   rightsDeclaration Json?        // {accepted, acceptedAt, acceptedByUserId, statement, version}
   probeResult       Json?        // ffprobe output (duration, streams, codecs…)
   durationSeconds   Float?

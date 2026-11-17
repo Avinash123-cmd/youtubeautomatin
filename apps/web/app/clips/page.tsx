@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { useClip, useClips, usePublishing } from '@/lib/hooks';
+import { useAccounts, useClip, useClips, usePublishing } from '@/lib/hooks';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, Section, Skeleton, StatusBadge } from '@/components/ui';
 import { ClipPlayer } from '@/components/clip-player';
 
@@ -99,9 +99,20 @@ export default function ClipsPage() {
                   <p className="text-xs text-ink-soft">
                     {variant.width}×{variant.height} · {variant.fps} fps · {variant.durationSeconds?.toFixed(2) ?? '—'}s
                   </p>
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex flex-wrap gap-2">
                     <a href={variant.downloadUrl ?? '#'} className="btn-secondary !px-3 !py-1 text-xs" download>
                       Download MP4
+                    </a>
+                    <a
+                      href={`/api/clips/${detail.data!.id}/captions?format=srt`}
+                      className="btn-secondary !px-3 !py-1 text-xs"
+                      download
+                      title="SRT subtitles generated from the word-level transcript, shifted to this clip"
+                    >
+                      Captions (.srt)
+                    </a>
+                    <a href={`/api/clips/${detail.data!.id}/captions?format=txt`} className="btn-secondary !px-3 !py-1 text-xs" download>
+                      Transcript (.txt)
                     </a>
                   </div>
                 </div>
@@ -241,7 +252,9 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
   const [scheduleAt, setScheduleAt] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [queued, setQueued] = useState<string | null>(null);
   const publishing = usePublishing();
+  const accounts = useAccounts();
   const enqueue = useMutation({
     mutationFn: () =>
       api('/api/publishing/jobs', {
@@ -254,21 +267,35 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
       }),
     onSuccess: () => {
       setError(null);
+      setQueued(`Queued for ${selectedPlatforms.map((platform) => (platform === 'YOUTUBE' ? 'YouTube Shorts' : 'Instagram Reels')).join(' and ')}.`);
+      setSelectedPlatforms([]);
       void client.invalidateQueries({ queryKey: ['publishing'] });
       void client.invalidateQueries({ queryKey: ['clip', clipId] });
     },
     onError: (mutationError: Error) => setError(mutationError.message),
   });
 
-  const connected = publishing.data
-    ? Array.from(new Set(publishing.data.jobs.items.map((job) => job.platform)))
-    : [];
-  const choices = connected.length > 0 ? connected : ['YOUTUBE', 'INSTAGRAM'];
+  // Only accounts that are connected *and* explicitly enabled for publishing can receive a post;
+  // the API enforces the same rule. Showing every platform regardless produced a 400 after the
+  // user had already chosen one.
+  const choices = Array.from(
+    new Set(
+      (accounts.data?.accounts ?? [])
+        .filter((account) => account.status === 'CONNECTED' && account.publishingEnabled)
+        .map((account) => account.platform),
+    ),
+  );
 
   return (
     <div className="space-y-2 border-t border-line pt-3">
       <p className="text-[13px] font-medium text-ink">Queue for publishing</p>
       <p className="hint">One job is created per selected platform. Accounts must be connected and publishing enabled first.</p>
+      {choices.length === 0 ? (
+        <p className="rounded-lg bg-surface-muted px-3 py-2 text-[13px] text-ink-soft">
+          No account is connected with publishing enabled.{' '}
+          <Link href="/accounts" className="font-medium text-accent underline">Connect YouTube or Instagram</Link>
+        </p>
+      ) : null}
       <div className="flex gap-2">
         {choices.map((platform) => (
           <button
@@ -291,6 +318,14 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
         <input type="datetime-local" className="input" value={scheduleAt} onChange={(event) => setScheduleAt(event.target.value)} />
       </Field>
       {error ? <ErrorState message={error} /> : null}
+      {queued ? (
+        <p className="rounded-lg bg-positive-soft px-3 py-2 text-[13px] text-positive">
+          {queued}{' '}
+          <Link href="/publishing" className="font-medium underline">
+            Track it in Publishing
+          </Link>
+        </p>
+      ) : null}
       <button
         type="button"
         className="btn-primary"

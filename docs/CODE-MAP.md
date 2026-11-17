@@ -2,9 +2,9 @@
 
 Every file that makes up this project, with its line count and what it does. This is an index, not a copy: the code lives at the path shown. Regenerate with `.venv/bin/python scripts/build-code-map.py` — do not hand-edit.
 
-**302 source files · 38,097 lines · 391 files tracked in git**
+**303 source files · 38,190 lines · 392 files tracked in git**
 
-Repository root `/home/user/clipforge-ai` · branch `master` · HEAD `f5cb4d8`
+Repository root `/home/user/clipforge-ai` · branch `master` · HEAD `b6f1b5c`
 
 
 ## API server — `apps/api`
@@ -356,7 +356,7 @@ Repository root `/home/user/clipforge-ai` · branch `master` · HEAD `f5cb4d8`
 
 ## Developer scripts — `scripts`
 
-8 source files · 724 lines
+9 source files · 817 lines
 
 | file | lines | purpose |
 | --- | ---: | --- |
@@ -366,6 +366,7 @@ Repository root `/home/user/clipforge-ai` · branch `master` · HEAD `f5cb4d8`
 | `scripts/check-api-keys.sh` | 56 | !/usr/bin/env bash |
 | `scripts/check-firebase.sh` | 4 | !/usr/bin/env bash |
 | `scripts/check-structure.sh` | 214 | !/usr/bin/env bash |
+| `scripts/check-youtube-import.sh` | 93 | !/usr/bin/env bash |
 | `scripts/deploy-vercel.sh` | 91 | !/usr/bin/env bash |
 | `scripts/dev-up.sh` | 85 | !/usr/bin/env bash |
 | `scripts/make-testdata.sh` | 73 | !/usr/bin/env bash |

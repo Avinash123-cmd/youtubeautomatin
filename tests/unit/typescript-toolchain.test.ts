@@ -7,12 +7,12 @@ const { checkTypeScript } = createRequire(import.meta.url)('../../scripts/check-
 
 describe('consistent monorepo compiler', () => {
   it('verifies every real workspace resolves the exact locked compiler', () => {
-    expect(checkTypeScript()).toBe('5.7.2');
+    expect(checkTypeScript()).toBe('5.9.3');
   });
   it.each([
-    { actual: '6.0.0', locked: '5.7.2', pin: '5.7.2', message: 'resolves TypeScript 6.0.0' },
-    { actual: '5.7.2', locked: '6.0.0', pin: '5.7.2', message: 'incompatible TypeScript' },
-    { actual: '5.7.2', locked: '5.7.2', pin: '^5.7.2', message: 'exact version' },
+    { actual: '6.0.0', locked: '5.9.3', pin: '5.9.3', message: 'resolves TypeScript 6.0.0' },
+    { actual: '5.9.3', locked: '6.0.0', pin: '5.9.3', message: 'incompatible TypeScript' },
+    { actual: '5.9.3', locked: '5.9.3', pin: '^5.9.3', message: 'exact version' },
   ])('rejects drift before invoking tsc: %j', ({ actual, locked, pin, message }) => {
     const root = mkdtempSync(path.join(tmpdir(), 'clipforge-compiler-'));
     const json = (file: string, body: unknown) => writeFileSync(path.join(root, file), JSON.stringify(body));

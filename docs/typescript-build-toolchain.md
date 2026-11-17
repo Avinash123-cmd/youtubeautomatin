@@ -1,5 +1,8 @@
 # Render TypeScript compiler consistency — 2026-11-16
 
+**Current pin: TypeScript 5.9.3.** The original 5.7.2 audit below is historical; see the
+[5.9.3 follow-up](#follow-up-explicit-typescript-593-pin) for the current change and verification.
+
 ## Diagnosis and version evidence
 
 The shared base configuration sets `module: CommonJS` and `moduleResolution: Node`. `Node` is the
@@ -127,3 +130,55 @@ Clear Render's build cache once after correcting the settings and confirm the lo
 versions before compilation. Preserve the database/session/encryption secrets. See
 [production startup](render-api-production.md) for runtime DB/Redis/Telegram/storage requirements and
 safe migration handling; do not reset data to fix a compiler mismatch.
+
+
+## Follow-up: explicit TypeScript 5.9.3 pin
+
+At the user's explicit request, root and all six workspace devDependencies now pin exactly
+`typescript: 5.9.3`. The existing root `$typescript` override continues to enforce the same version
+for transitive consumers. `npm install` regenerated the root lockfile with the 5.9.3 tarball and
+integrity and updated each workspace record; no unrelated lockfile dependency update occurred.
+The compiler regression test expectations/fixtures now use 5.9.3. No tsconfig, application logic,
+authentication, database architecture, production command or deployment configuration changed.
+
+Before installation no node_modules compiler was present in this checkout; the previous committed
+pin/lockfile was 5.7.2. Render's failing installed compiler remains unknown from the diagnostic alone.
+After installation `npx tsc --version` prints **Version 5.9.3**, and `npm run check:typescript` confirms
+root plus every workspace resolves that version. Legacy CommonJS/Node resolution and the existing
+Next Bundler configuration remain unchanged.
+
+Commands/results:
+
+- `npm install`: exit 0; lockfile synchronized. No npm audit fix command was run.
+- `npx tsc --version`: exit 0, Version 5.9.3.
+- `npm run check:typescript`: exit 0, all locations 5.9.3.
+- `npm run build`: exit 1 at the Prisma native schema-engine download from binaries.prisma.sh,
+  blocked by this sandbox's network/TLS restrictions. No TS5108 occurred before that blocker.
+- Full root build with sandbox-only engine-free Prisma generation:
+
+  ```sh
+  PRISMA_GENERATE_NO_ENGINE=1 \
+  PRISMA_QUERY_ENGINE_LIBRARY=/bin/true \
+  PRISMA_QUERY_ENGINE_BINARY=/bin/true \
+  PRISMA_SCHEMA_ENGINE_BINARY=/bin/true \
+  npm run build
+  ```
+
+  Exit 0: shared-types, validation, platform-connectors, database, API and Next production build
+  all passed with TypeScript 5.9.3. No TS5108. This is not an unqualified native production build:
+  never copy the sandbox flags to Render. Native engine generation/deployment remain unverified.
+- `SESSION_SECRET=isolated-unit-test-secret-not-for-production-12345 npx vitest run --config tests/vitest.config.ts`:
+  exit 0, **344 passed, 3 opt-in cases skipped**, 45 files.
+- Compiled `apps/api/dist/main.js`: exists. API start:prod: `node dist/main.js`, unchanged.
+- `git diff --check`: passed.
+
+Changed files: root package.json and package-lock.json; apps/api/package.json;
+apps/web/package.json; packages/database/package.json; packages/platform-connectors/package.json;
+packages/shared-types/package.json; packages/validation/package.json;
+tests/unit/typescript-toolchain.test.ts; this document.
+
+Existing Render configuration remains valid: repository-root working directory,
+`npm ci --include=dev && npm run build:api` for backend-only build, `npm run start:api` delegating to
+API start:prod, NODE_ENV=production and NODE_VERSION=22.22.3. The full-monorepo equivalent is
+`npm ci --include=dev && npm run build`. Clear the build cache after merging and inspect the logged
+compiler versions. No production deployment success is claimed.

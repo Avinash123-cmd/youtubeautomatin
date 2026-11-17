@@ -1,9 +1,10 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { createPublishingJobSchema, paginationSchema, publishingToggleSchema } from '@clipforge/validation';
+import { createPublishingJobSchema, publishingToggleSchema } from '@clipforge/validation';
 import { CurrentContext, Roles } from '../common/decorators/auth.decorators';
 import type { RequestContext } from '../common/guards/session-auth.guard';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
+import { publishingJobsQuerySchema } from './publishing-query';
 import { PublishingService } from './publishing.service';
 
 @ApiTags('publishing')
@@ -38,9 +39,7 @@ export class PublishingController {
 
   @Get('jobs')
   list(@Query() query: unknown, @CurrentContext() ctx: RequestContext) {
-    const parsed = paginationSchema.parse(query) as { page: number; pageSize: number };
-    const status = (query as { status?: string }).status;
-    return this.publishing.listJobs(ctx, { ...parsed, status });
+    return this.publishing.listJobs(ctx, publishingJobsQuerySchema.parse(query));
   }
 
   @Get('history')

@@ -172,8 +172,8 @@ export async function acquireJobLease(jobId: string, workerId: string, leaseSeco
   const result = await prisma.processingJob.updateMany({
     where: {
       id: jobId,
-      OR: [{ workerId: null }, { workerId }, { leaseExpiresAt: { lt: now } }],
-      status: { notIn: ['COMPLETED', 'CANCELLED', 'PARTIALLY_COMPLETED'] },
+      OR: [{ workerId: null }, { leaseExpiresAt: { lt: now } }],
+      status: { notIn: ['COMPLETED', 'CANCELLED', 'FAILED', 'PARTIALLY_COMPLETED'] },
     },
     // NOTE: `attempt` is the retry counter, not a lease counter. Incrementing it here made a
     // healthy job burn its whole retry budget just by moving between pipeline and render workers,
@@ -190,8 +190,8 @@ export async function heartbeatJob(jobId: string, workerId: string, leaseSeconds
   });
 }
 
-export async function releaseJobLease(jobId: string): Promise<void> {
-  await prisma.processingJob.updateMany({ where: { id: jobId }, data: { workerId: null, leaseExpiresAt: null } });
+export async function releaseJobLease(jobId: string, workerId?: string): Promise<void> {
+  await prisma.processingJob.updateMany({ where: { id: jobId, ...(workerId ? { workerId } : {}) }, data: { workerId: null, leaseExpiresAt: null } });
 }
 
 /**

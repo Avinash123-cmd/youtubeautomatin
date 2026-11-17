@@ -207,6 +207,20 @@ export class StorageService {
     return `${base.replace(/\/$/, '')}/${key}`;
   }
 
+  /** Bearer capability for an explicitly authorized platform fetch, never a browser preview URL.
+   * Do not persist or log the returned URL. Local media routes require a session and cannot be
+   * fetched by Instagram. S3 stays private; its provider must be reachable over public HTTPS.
+   */
+  async platformReadUrl(key: string, expiresIn = 3600): Promise<string | null> {
+    this.assertSafeKey(key);
+    if (!Number.isInteger(expiresIn) || expiresIn < 60 || expiresIn > 86400) {
+      throw new BadRequestException('Platform media URL lifetime must be between 60 and 86400 seconds');
+    }
+    if (this.driver !== 's3') return null;
+    const url = await getSignedUrl(this.s3!, new GetObjectCommand({ Bucket: env.S3_BUCKET!, Key: key }), { expiresIn });
+    return new URL(url).protocol === 'https:' ? url : null;
+  }
+
   /**
    * Multipart upload session. For S3 this returns presigned part URLs so the
    * browser streams bytes straight to the bucket. For the local driver the
@@ -295,15 +309,10 @@ export class StorageService {
     }
   }
 
+  /** Configuration capability check only: not proof the provider can fetch an object. */
   async expectPublicHttps(): Promise<{ ok: boolean; reason?: string }> {
-    const probe = this.publicUrl('health/probe.mp4');
-    if (!probe) return { ok: false, reason: 'No public base URL configured for the active storage driver' };
-    if (!probe.startsWith('https://')) {
-      return {
-        ok: false,
-        reason: `Storage public URL is "${probe}", but Instagram and YouTube require publicly reachable HTTPS media. Configure S3_PUBLIC_BASE_URL (or a public HTTPS origin) before enabling automatic publishing.`,
-      };
-    }
-    return { ok: true };
+    if (this.driver !== 's3') return { ok: false, reason: 'Instagram cannot fetch session-authenticated local media. Configure private S3-compatible storage with a publicly reachable HTTPS endpoint.' };
+    const url = await this.platformReadUrl('health/probe.mp4');
+    return url ? { ok: true } : { ok: false, reason: 'Platform media fetch requires a publicly reachable HTTPS S3 endpoint.' };
   }
 }

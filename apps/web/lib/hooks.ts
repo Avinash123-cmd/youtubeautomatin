@@ -437,3 +437,14 @@ export function useSendTestNotification() {
     },
   });
 }
+
+
+/** The calendar queries its date window, never truncates the latest 50 jobs as a calendar. */
+export function usePublishingCalendar(from: string, to: string, page: number) {
+  return useQuery({
+    queryKey: ['publishing', 'calendar', from, to, page],
+    queryFn: () => api<{ items: PublishingJobRow[]; total: number; page: number; pageSize: number }>(
+      `/api/publishing/jobs?${new URLSearchParams({ scheduledFrom: from, scheduledTo: to, page: String(page), pageSize: '100' })}`),
+    refetchInterval: 15000,
+  });
+}

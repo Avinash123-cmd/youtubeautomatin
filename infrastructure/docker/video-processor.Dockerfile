@@ -14,6 +14,7 @@ WORKDIR /srv
 COPY services/video-processor/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=app:app services/video-processor/app ./app
+COPY --chown=app:app services/media_paths.py ./services/media_paths.py
 USER app
 EXPOSE 8200
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

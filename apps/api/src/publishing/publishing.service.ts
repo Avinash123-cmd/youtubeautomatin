@@ -54,10 +54,12 @@ export class PublishingService {
       throw new BadRequestException({ code: 'PUBLISH_ELIGIBILITY_FAILED', message: `Automatic publishing is not supported for ${account.platform}.` });
     }
     const publishingConfig = this.buildPublishingConfig(input, account.platform);
-    // 2. Storage must serve media over public HTTPS — checked, never assumed.
-    const storageCheck = await this.storage.expectPublicHttps();
-    if (!storageCheck.ok) {
-      throw new BadRequestException({ code: 'PUBLISH_ELIGIBILITY_FAILED', message: storageCheck.reason });
+    // YouTube uploads bytes from the worker; only Instagram fetches an HTTPS capability URL.
+    if (account.platform === 'INSTAGRAM') {
+      const storageCheck = await this.storage.expectPublicHttps();
+      if (!storageCheck.ok) {
+        throw new BadRequestException({ code: 'PUBLISH_ELIGIBILITY_FAILED', message: storageCheck.reason });
+      }
     }
     // 3. Required scopes must actually be granted.
     const requiredScopes =
@@ -249,12 +251,14 @@ export class PublishingService {
     return variants[0]?.id ?? null;
   }
 
-  async listJobs(ctx: RequestContext, query: { page: number; pageSize: number; status?: string }) {
-    const where = { workspaceId: ctx.workspaceId, ...(query.status ? { status: query.status as never } : {}) };
+  async listJobs(ctx: RequestContext, query: { page: number; pageSize: number; status?: string; scheduledFrom?: string; scheduledTo?: string }) {
+    const where = { workspaceId: ctx.workspaceId, ...(query.status ? { status: query.status as never } : {}),
+      ...(query.scheduledFrom && query.scheduledTo ? { scheduledFor: { gte: new Date(query.scheduledFrom), lt: new Date(query.scheduledTo) } } : {}),
+    };
     const [items, total] = await Promise.all([
       prisma.publishingJob.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: query.scheduledFrom ? [{ scheduledFor: 'asc' }, { id: 'asc' }] : [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
         include: {

@@ -29,4 +29,11 @@ describe('paginated source library', () => {
     await expect(service.get('foreign-source', ctx)).rejects.toMatchObject({ status: 404 });
     expect(db.sourceVideo.findFirst).toHaveBeenCalledWith({ where: { id: 'foreign-source', workspaceId: 'workspace-a', deletedAt: null } });
   });
+  it('returns an authenticated media route rather than a raw storage key URL', async () => {
+    db.sourceVideo.findFirst.mockResolvedValue({ id: 'owned-source', storageKey: 'workspace/private.mp4', createdAt: new Date(0) });
+    const result = await service.get('owned-source', ctx);
+    expect(result.mediaUrl).toBe('/media/sources/owned-source');
+    expect(result.mediaUrl).not.toContain('workspace/private.mp4');
+  });
+
 });

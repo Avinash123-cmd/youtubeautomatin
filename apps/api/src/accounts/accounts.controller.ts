@@ -32,15 +32,17 @@ export class AccountsController {
   @Public()
   @ApiOperation({ summary: 'YouTube OAuth callback — verifies state, returns channels for explicit selection' })
   async youtubeCallback(@Query('code') code: string, @Query('state') state: string, @Query('error') error: string | undefined, @Res() res: Response) {
-    if (error) return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=${encodeURIComponent(error)}`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    if (error) return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=authorization_denied`);
     if (!code || !state) return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=missing_code_or_state`);
     try {
       const result = await this.accounts.handleYouTubeCallback(code, state);
       const encoded = Buffer.from(JSON.stringify(result.channels)).toString('base64url');
       return res.redirect(`${env.APP_URL}/accounts?oauth=youtube_select&pending=${result.pendingToken}&channels=${encoded}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'callback failed';
-      return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=${encodeURIComponent(message)}`);
+    } catch {
+      // Provider/DB exceptions can contain tokens; never place them in URL history or referrers.
+      return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=connection_failed`);
     }
   }
 
@@ -69,14 +71,16 @@ export class AccountsController {
     @Query('error_description') description: string | undefined,
     @Res() res: Response,
   ) {
-    if (error) return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=${encodeURIComponent(description ?? error)}`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    if (error) return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=authorization_denied`);
     if (!code || !state) return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=missing_code_or_state`);
     try {
       const account = await this.accounts.handleInstagramCallback(code, state);
       return res.redirect(`${env.APP_URL}/accounts?oauth=instagram_connected&account=${account.id}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'callback failed';
-      return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=${encodeURIComponent(message)}`);
+    } catch {
+      // Provider/DB exceptions can contain tokens; never place them in URL history or referrers.
+      return res.redirect(`${env.APP_URL}/accounts?oauth=error&reason=connection_failed`);
     }
   }
 

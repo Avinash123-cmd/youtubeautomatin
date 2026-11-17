@@ -30,8 +30,16 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-7">
+      <section className="relative isolate overflow-hidden rounded-3xl bg-[#11152f] p-6 text-white sm:p-9">
+        <div aria-hidden="true" className="pointer-events-none absolute -right-10 -top-20 -z-10 h-80 w-80 rounded-full bg-purple-500/20 blur-3xl" />
+        <div className="flex flex-wrap items-center justify-between gap-6">
+          <div className="max-w-xl"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-purple-200">Your creative workspace</p><h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Big ideas. Short-form impact.</h1><p className="mt-3 text-sm leading-relaxed text-slate-300">Turn your authorized footage into captioned vertical clips. Review every detail, then choose when and where to publish.</p></div>
+          <div className="flex flex-wrap gap-3"><Link href="/create" className="btn bg-white text-slate-900 hover:bg-purple-50">＋ Create project</Link><Link href="/calendar" className="btn border border-white/25 text-white hover:bg-white/10">Content calendar →</Link></div>
+        </div>
+        <div className="mt-7 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/10 pt-4 text-xs text-slate-300"><span>{counts.processing} active processing jobs</span><span>{counts.pendingPublishingJobs} publishing jobs pending</span><span>{counts.clips} clips in your library</span></div>
+      </section>
       <Section
-        as="h1" title="Workspace overview" description="Every number below comes from the database — nothing is simulated.">
+        as="h2" title="Workspace overview" description="Every number below comes from the database — nothing is simulated.">
         <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
           <StatCard label="Source videos" value={counts.sources} hint="Uploaded and validated media" />
           <StatCard label="Generated clips" value={counts.clips} hint={`${data.variantBreakdown.map((v) => `${v.count}×${v.durationKind}s`).join(' · ') || 'none yet'}`} />

@@ -182,6 +182,23 @@ export type AppEnv = z.infer<typeof envSchema>;
 
 let cached: AppEnv | null = null;
 
+/** A production container's loopback address is not a managed database or Redis instance. */
+export function validateProductionConnections(config: { NODE_ENV: string; DATABASE_URL: string; REDIS_URL: string }): void {
+  if (config.NODE_ENV !== 'production') return;
+  for (const [name, raw, schemes] of [
+    ['DATABASE_URL', config.DATABASE_URL, ['postgres:', 'postgresql:']],
+    ['REDIS_URL', config.REDIS_URL, ['redis:', 'rediss:']],
+  ] as const) {
+    let url: URL;
+    try { url = new URL(raw); } catch { throw new Error(`${name} must be a valid service URL.`); }
+    if (!(schemes as readonly string[]).includes(url.protocol)) throw new Error(`${name} uses an unsupported service protocol.`);
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || host === '[::1]' || host === '[::]' || /^127\./.test(host) || host.startsWith('[::ffff:7f')) {
+      throw new Error(`${name} must not point to localhost/loopback in production. Use the reachable managed service hostname.`);
+    }
+  }
+}
+
 export function loadEnv(): AppEnv {
   if (cached) return cached;
   const parsed = envSchema.safeParse(process.env);
@@ -191,6 +208,7 @@ export function loadEnv(): AppEnv {
   }
   // Storage driver specific requirements, checked here rather than defaulted.
   const env = parsed.data;
+  validateProductionConnections(env);
   if (!env.S3_PUBLIC_BASE_URL && env.STORAGE_PUBLIC_BASE_URL) {
     env.S3_PUBLIC_BASE_URL = env.STORAGE_PUBLIC_BASE_URL;
   }

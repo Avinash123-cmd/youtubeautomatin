@@ -1,3 +1,5 @@
+import type { Job } from 'bullmq';
+import { deferContendedJob, currentLeaseOwner, withLeaseScope } from './lease-contention';
 /**
  * Render worker — turns one planned clip into a real vertical MP4 with burned
  * subtitles, stores it, and advances the job once every clip is rendered.
@@ -28,19 +30,23 @@ interface JobConfig {
   brandProfileId?: string;
 }
 
-async function handler(job: { data: { clipId: string; jobId: string } }): Promise<void> {
+async function handler(job: Job<{ clipId: string; jobId: string }>): Promise<void> {
+  return withLeaseScope(runtime.workerId, () => handleLeased(job));
+}
+
+async function handleLeased(job: Job<{ clipId: string; jobId: string }>): Promise<void> {
   const { clipId, jobId } = job.data;
-  const leased = await acquireJobLease(jobId, runtime.workerId, env.JOB_LEASE_SECONDS);
+  const leased = await acquireJobLease(jobId, currentLeaseOwner(runtime.workerId), env.JOB_LEASE_SECONDS);
   if (!leased) {
-    runtime.logger.info(`job ${jobId} is owned by another worker — render skipped`);
-    return;
+    const current = await prisma.processingJob.findUnique({ where: { id: jobId }, select: { status: true } });
+    return deferContendedJob(job, current?.status ?? null);
   }
-  const stopRenewal = startLeaseRenewal(jobId, runtime.workerId, runtime.logger);
+  const stopRenewal = startLeaseRenewal(jobId, currentLeaseOwner(runtime.workerId), runtime.logger);
   try {
     await renderClip(clipId, jobId);
   } finally {
     stopRenewal();
-    await releaseJobLease(jobId).catch(() => undefined);
+    await releaseJobLease(jobId, currentLeaseOwner(runtime.workerId)).catch(() => undefined);
   }
 }
 
@@ -247,7 +253,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
     await transitionJob(jobId, 'FAILED', {
       errorCode: 'RENDER_FAILED',
       errorMessage: `All ${job.clips.length} clip(s) failed to render`,
-      workerId: runtime.workerId,
+      workerId: currentLeaseOwner(runtime.workerId),
     });
     return;
   }
@@ -255,13 +261,13 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
   await transitionJob(jobId, 'VALIDATION', {
     progressPercent: 80,
     progressDetail: `Validated ${ready.length} rendered clip(s)`,
-    workerId: runtime.workerId,
+    workerId: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
   await transitionJob(jobId, 'ASSET_STORAGE', {
     progressPercent: 88,
     progressDetail: `Stored ${ready.length} clip asset(s) in ${storage.driver} storage`,
-    workerId: runtime.workerId,
+    workerId: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
 
@@ -277,7 +283,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
         clipsFailed: failed.length,
         publishing: 'manual',
       } as Prisma.InputJsonValue,
-      workerId: runtime.workerId,
+      workerId: currentLeaseOwner(runtime.workerId),
     });
     return;
   }
@@ -323,13 +329,13 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
   await transitionJob(jobId, 'PUBLISHING_QUEUED', {
     progressPercent: 92,
     progressDetail: `Publishing jobs queued for ${configuration.platforms.join(', ')}`,
-    workerId: runtime.workerId,
+    workerId: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
   await transitionJob(jobId, 'PUBLISHING', {
     progressPercent: 95,
     progressDetail: 'Waiting for platform confirmation',
-    workerId: runtime.workerId,
+    workerId: currentLeaseOwner(runtime.workerId),
     leaseSeconds: env.JOB_LEASE_SECONDS,
   });
 }

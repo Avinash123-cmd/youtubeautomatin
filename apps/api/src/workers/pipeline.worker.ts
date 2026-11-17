@@ -1,3 +1,5 @@
+import type { Job } from 'bullmq';
+import { deferContendedJob, currentLeaseOwner, withLeaseScope } from './lease-contention';
 /**
  * Pipeline worker — owns stages PROBING → TRANSCRIBING → AI_ANALYSIS →
  * CLIP_SELECTION → RENDERING hand-off.
@@ -41,20 +43,24 @@ interface JobConfiguration {
   subtitlePresetStyle?: Record<string, unknown>;
 }
 
-async function handler(job: { id?: string; data: { jobId: string; resumeFrom?: string } }): Promise<void> {
+async function handler(job: Job<{ jobId: string; resumeFrom?: string }>): Promise<void> {
+  return withLeaseScope(runtime.workerId, () => handleLeased(job));
+}
+
+async function handleLeased(job: Job<{ jobId: string; resumeFrom?: string }>): Promise<void> {
   const jobId = job.data.jobId;
   const resumeFrom = job.data.resumeFrom;
-  const leased = await acquireJobLease(jobId, runtime.workerId, env.JOB_LEASE_SECONDS);
+  const leased = await acquireJobLease(jobId, currentLeaseOwner(runtime.workerId), env.JOB_LEASE_SECONDS);
   if (!leased) {
-    runtime.logger.info(`job ${jobId} is owned by another worker (or finished) — skipping`);
-    return;
+    const current = await prisma.processingJob.findUnique({ where: { id: jobId }, select: { status: true } });
+    return deferContendedJob(job, current?.status ?? null);
   }
-  const stopRenewal = startLeaseRenewal(jobId, runtime.workerId, runtime.logger);
+  const stopRenewal = startLeaseRenewal(jobId, currentLeaseOwner(runtime.workerId), runtime.logger);
   try {
     await runPipeline(jobId, resumeFrom);
   } finally {
     stopRenewal();
-    await releaseJobLease(jobId).catch(() => undefined);
+    await releaseJobLease(jobId, currentLeaseOwner(runtime.workerId)).catch(() => undefined);
   }
 }
 
@@ -84,7 +90,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
     // ------------------------------- PROBING ---------------------------------
     if (!completedStages.has('PROBING')) {
       await transitionJob(jobId, 'PROBING', {
-        workerId: runtime.workerId,
+        workerId: currentLeaseOwner(runtime.workerId),
         progressPercent: 5,
         progressDetail: 'Inspecting source media with ffprobe',
         leaseSeconds: env.JOB_LEASE_SECONDS,
@@ -111,7 +117,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         },
       });
       await transitionJob(jobId, 'TRANSCRIBING', {
-        workerId: runtime.workerId,
+        workerId: currentLeaseOwner(runtime.workerId),
         progressPercent: 12,
         progressDetail: `Probed ${probe.width}x${probe.height}, ${probe.duration_seconds.toFixed(1)}s`,
         leaseSeconds: env.JOB_LEASE_SECONDS,
@@ -192,7 +198,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         },
       });
       await transitionJob(jobId, 'AI_ANALYSIS', {
-        workerId: runtime.workerId,
+        workerId: currentLeaseOwner(runtime.workerId),
         progressPercent: 30,
         progressDetail: `${transcription.segments.length} transcript segments (${transcription.language})`,
         leaseSeconds: env.JOB_LEASE_SECONDS,
@@ -349,7 +355,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
           report: analysis.report,
           variantDecisions: analysis.variant_decisions,
         } as Prisma.InputJsonValue,
-        workerId: runtime.workerId,
+        workerId: currentLeaseOwner(runtime.workerId),
       });
       await appendAuditLog({
         workspaceId: job.workspaceId,
@@ -494,7 +500,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
 
     // ------------------------------- RENDERING --------------------------------
     await transitionJob(jobId, 'RENDERING', {
-      workerId: runtime.workerId,
+      workerId: currentLeaseOwner(runtime.workerId),
       progressPercent: 45,
       progressDetail: `${clipIds.length} clip(s) queued for vertical rendering`,
       resultSummary: {
@@ -560,7 +566,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       errorMessage: message.slice(0, 1800),
       errorDetails: { stage: job.stage, retryable, attempt } as Prisma.InputJsonValue,
       progressDetail: exhausted ? `Failed: ${message}`.slice(0, 400) : `Retrying: ${message}`.slice(0, 400),
-      workerId: runtime.workerId,
+      workerId: currentLeaseOwner(runtime.workerId),
     });
     if (!exhausted) {
       // Re-enqueue from the last successful stage via the outbox (durable).
@@ -600,7 +606,7 @@ async function ensureStatus(jobId: string, expected: string): Promise<void> {
     runtime.logger.info(`job ${jobId} is already at ${job.status}; not rewinding to ${expected}`);
     return;
   }
-  await transitionJob(jobId, expected as never, { workerId: runtime.workerId, leaseSeconds: env.JOB_LEASE_SECONDS });
+  await transitionJob(jobId, expected as never, { workerId: currentLeaseOwner(runtime.workerId), leaseSeconds: env.JOB_LEASE_SECONDS });
 }
 
 async function main() {

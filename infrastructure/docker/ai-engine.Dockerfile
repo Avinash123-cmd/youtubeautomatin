@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # FastAPI AI engine: Whisper transcription, frame sampling, Gemini structured analysis.
 FROM python:3.13-slim-bookworm AS runtime
-ENV PYTHONUNBUFFERED=1 \
+ENV NODE_ENV=production \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_HOME=/home/app/.cache/huggingface
@@ -15,6 +16,7 @@ WORKDIR /srv
 COPY services/ai-engine/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=app:app services/ai-engine/app ./app
+COPY --chown=app:app services/media_paths.py ./services/media_paths.py
 USER app
 EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

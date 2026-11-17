@@ -446,7 +446,7 @@ export class SourcesService {
       sourceUrl: source.sourceUrl,
       rejectionReason: source.rejectionReason,
       // Never expose the raw storage key; hand out a media URL when one exists.
-      mediaUrl: source.storageKey ? this.storage.publicUrl(source.storageKey) : null,
+      mediaUrl: source.storageKey ? `/media/sources/${source.id}` : null,
       probe: source.probeResult,
       createdAt: source.createdAt.toISOString(),
     };

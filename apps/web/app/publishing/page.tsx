@@ -18,6 +18,7 @@ export default function PublishingPage() {
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><Link href="/calendar" className="btn-secondary">Open content calendar</Link></div>
       <Section
         as="h1" title="Publishing manager" description="One job per platform and clip. Idempotency keys prevent duplicate uploads; ambiguous timeouts are reconciled from the platform." />
 

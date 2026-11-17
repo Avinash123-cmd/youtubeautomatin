@@ -2,15 +2,12 @@ import { BadRequestException, NotFoundException, Injectable } from '@nestjs/comm
 import { appendAuditLog, prisma } from '@clipforge/database';
 import type { updateClipMetadataSchema } from '@clipforge/validation';
 import type { z } from 'zod';
-import { StorageService } from '../storage/storage.service';
 import type { RequestContext } from '../common/guards/session-auth.guard';
 
 type MetadataPatch = z.infer<typeof updateClipMetadataSchema>;
 
 @Injectable()
 export class ClipsService {
-  constructor(private readonly storage: StorageService) {}
-
   async list(ctx: RequestContext, query: { page: number; pageSize: number; jobId?: string; durationKind?: number; status?: string; platform?: string }) {
     const where = {
       workspaceId: ctx.workspaceId,
@@ -59,7 +56,6 @@ export class ClipsService {
     },
     platformFilter?: string,
   ) {
-    const hasPublicStorage = this.storage.driver === 's3';
     return {
       id: clip.id,
       title: clip.title,
@@ -81,14 +77,10 @@ export class ClipsService {
         checksum: variant.checksumSha256,
         renderReport: variant.renderReport,
         previewUrl: variant.mediaAsset
-          ? hasPublicStorage
-            ? this.storage.publicUrl(variant.mediaAsset.storageKey)
-            : `/media/clips/${variant.id}`
+          ? `/media/clips/${variant.id}`
           : null,
         downloadUrl: variant.mediaAsset
-          ? hasPublicStorage
-            ? this.storage.publicUrl(variant.mediaAsset.storageKey)
-            : `/media/clips/${variant.id}?download=1`
+          ? `/media/clips/${variant.id}?download=1`
           : null,
       })),
       metadata: clip.metadata
@@ -218,7 +210,7 @@ export class ClipsService {
       ipAddress: ctx.ip,
     });
     return {
-      url: this.storage.driver === 's3' ? this.storage.publicUrl(variant.mediaAsset.storageKey) : `/media/clips/${variant.id}?download=1`,
+      url: `/media/clips/${variant.id}?download=1`,
       fileName: `${clip.title.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${clip.durationKind}s.mp4`,
     };
   }

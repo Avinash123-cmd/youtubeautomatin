@@ -23,6 +23,10 @@ export default function CreatePage() {
   const [sourceUrl, setSourceUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  const inspectYouTube = useMutation({
+    mutationFn: () => api<{ availability: string; metadata: { snippet: { title: string; channelTitle: string } } | null; message: string }>('/api/sources/youtube/inspect', { method: 'POST', body: { url: youtubeReference } }),
+  });
+
   const missing = configuration.data?.missingForProcessing ?? session.data?.configuration?.missing ?? [];
 
   const createFromFile = useMutation({
@@ -163,9 +167,12 @@ export default function CreatePage() {
           <Field label="Rights note" hint="Optional context stored with the audit trail (licence id, client name, contract reference).">
             <textarea className="input min-h-[72px]" value={rightsNote} onChange={(event) => setRightsNote(event.target.value)} />
           </Field>
-          <Field label="YouTube reference URL" hint="Reference only — used for attribution and never fetched.">
-            <input className="input" placeholder="https://www.youtube.com/watch?v=…" value={youtubeReference} onChange={(event) => setYoutubeReference(event.target.value)} />
+          <Field label="YouTube reference URL" hint="Official metadata lookup only. Original media must be uploaded or imported separately.">
+            <input className="input" placeholder="https://www.youtube.com/watch?v=…" value={youtubeReference} onChange={(event) => { setYoutubeReference(event.target.value); inspectYouTube.reset(); }} />
           </Field>
+          <button type="button" className="btn-secondary" disabled={!youtubeReference || inspectYouTube.isPending} onClick={() => inspectYouTube.mutate()}>{inspectYouTube.isPending ? 'Checking YouTube…' : 'Check YouTube source'}</button>
+          {inspectYouTube.error ? <ErrorState message={inspectYouTube.error.message} /> : null}
+          {inspectYouTube.data ? <div className="space-y-1 text-sm" role="status"><p className="font-medium">{inspectYouTube.data.metadata?.snippet.title ?? inspectYouTube.data.availability}</p><p>{inspectYouTube.data.metadata?.snippet.channelTitle}</p><p>{inspectYouTube.data.message}</p></div> : null}
           <div className="rounded-xl2 border border-line bg-surface-muted px-4 py-3 text-[13px] text-ink-soft">
             <p className="font-medium text-ink">Active processing configuration</p>
             <p className="mt-1">

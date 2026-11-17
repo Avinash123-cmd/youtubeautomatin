@@ -1,3 +1,4 @@
+import { isYouTubeUrl } from './domain';
 import { z } from 'zod';
 import { NOTIFICATION_CATEGORIES } from '@clipforge/shared-types';
 
@@ -78,7 +79,7 @@ export const initiateUploadSchema = z.object({
     .string()
     .trim()
     .url()
-    .refine((u) => /^https:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//.test(u), 'Must be a YouTube URL')
+    .refine(isYouTubeUrl, 'Must be a valid YouTube video URL')
     .optional(),
 });
 
@@ -107,7 +108,7 @@ export const importUrlSchema = z.object({
     .string()
     .trim()
     .url()
-    .refine((u) => /^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(u), 'Must be a YouTube URL')
+    .refine(isYouTubeUrl, 'Must be a valid YouTube video URL')
     .optional(),
   rightsDeclaration: z.object({
     accepted: z.literal(true),

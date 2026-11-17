@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { z } from 'zod';
+import { BadRequestException, ServiceUnavailableException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -37,6 +38,33 @@ export class SourcesService {
     private readonly media: MediaValidationService,
     private readonly config: AppConfigService,
   ) {}
+
+  /** Official metadata lookup only. A watch URL is never a media download grant. */
+  async inspectYouTube(url: string) {
+    const videoId = parseYouTubeVideoId(url);
+    if (!videoId) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Provide a valid HTTPS YouTube video URL' });
+    if (!env.YOUTUBE_DATA_API_KEY) throw new ServiceUnavailableException({ code: 'CONFIGURATION_REQUIRED', message: 'YouTube metadata lookup requires YOUTUBE_DATA_API_KEY. Upload the authorized original media to continue.' });
+    let response: Response;
+    try {
+      response = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status&id=${videoId}`, {
+        headers: { 'x-goog-api-key': env.YOUTUBE_DATA_API_KEY }, signal: AbortSignal.timeout(10000), redirect: 'error',
+      });
+    } catch {
+      throw new ServiceUnavailableException({ code: 'YOUTUBE_UNAVAILABLE', message: 'Official YouTube metadata lookup could not be reached' });
+    }
+    if (!response.ok) throw new ServiceUnavailableException({ code: 'YOUTUBE_LOOKUP_FAILED', message: `YouTube metadata API returned HTTP ${response.status}` });
+    const schema = z.object({ items: z.array(z.object({ id: z.string(), snippet: z.object({ title: z.string(), description: z.string(), channelTitle: z.string() }), contentDetails: z.object({ duration: z.string(), caption: z.string().optional() }) })) });
+    let payload: z.infer<typeof schema>;
+    try { payload = schema.parse(await response.json()); } catch {
+      throw new ServiceUnavailableException({ code: 'INVALID_PROVIDER_RESPONSE', message: 'YouTube returned invalid metadata' });
+    }
+    const video = payload.items.find(item => item.id === videoId);
+    return {
+      videoId, availability: video ? 'AVAILABLE' : 'UNAVAILABLE_OR_PRIVATE', metadata: video ?? null,
+      originalMedia: 'UPLOAD_REQUIRED', transcript: 'NOT_RETRIEVED',
+      message: 'Metadata and caption availability do not grant media or transcript access. Upload your original video or import an authorized direct media URL; speech is transcribed from that media.',
+    };
+  }
 
   private sourceKey(workspaceId: string, sourceId: string, fileName: string): string {
     const ext = (fileName.match(/\.[A-Za-z0-9]{1,6}$/)?.[0] ?? '.mp4').toLowerCase();

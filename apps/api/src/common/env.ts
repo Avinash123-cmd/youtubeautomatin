@@ -153,6 +153,7 @@ export const envSchema = z.object({
   GEMINI_TEXT_MODEL: z.string().optional(),
   GEMINI_VISION_MODEL: z.string().optional(),
 
+  YOUTUBE_DATA_API_KEY: z.string().optional(),
   YOUTUBE_CLIENT_ID: z.string().optional(),
   YOUTUBE_CLIENT_SECRET: z.string().optional(),
   YOUTUBE_REDIRECT_URI: z.string().optional(),

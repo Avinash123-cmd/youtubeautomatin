@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { BadRequestException, Body, Controller, Get, Param, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -20,6 +21,13 @@ const MAX_PART_BYTES = 64 * 1024 * 1024;
 @Controller('api/sources')
 export class SourcesController {
   constructor(private readonly sources: SourcesService, private readonly prisma: PrismaService) {}
+
+  @Post('youtube/inspect')
+  @RateLimit({ limit: 10, windowSeconds: 60, scope: 'source-youtube-inspect' })
+  @ApiOperation({ summary: 'Look up official YouTube metadata without downloading media or scraping captions' })
+  inspectYouTube(@Body() body: unknown, @CurrentContext() _ctx: RequestContext) {
+    return this.sources.inspectYouTube(z.object({ url: z.string().url().max(2048) }).parse(body).url);
+  }
 
   @Post('upload/initiate')
   @RateLimit({ limit: 20, windowSeconds: 60, scope: 'source-upload-initiate' })

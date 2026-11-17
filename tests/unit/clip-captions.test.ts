@@ -105,6 +105,10 @@ describe('serialisation', () => {
     expect(plainText(cues)).toBe('First line Second line');
   });
 
+  it('carries milliseconds instead of emitting a 1000 field', () => {
+    expect(toSrt([{ start: 5.9996, end: 6.9995, text: 'carry' }])).toContain('00:00:06,000 --> 00:00:07,000');
+  });
+
   it('pads every timestamp component to a fixed width', () => {
     expect(toSrt([{ start: 3725.004, end: 3726, text: 'late' }])).toContain('01:02:05,004 --> 01:02:06,000');
   });

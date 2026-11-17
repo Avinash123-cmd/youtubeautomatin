@@ -78,11 +78,13 @@ export function wordsForWindow(words: CaptionWord[], startSeconds: number, endSe
 }
 
 function timestamp(seconds: number, separator: ',' | '.'): string {
-  const total = Math.max(0, seconds);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const secs = Math.floor(total % 60);
-  const millis = Math.round((total - Math.floor(total)) * 1000);
+  // Round to milliseconds *first*, then split: rounding the fractional part on its own can carry to
+  // 1000 and produce an invalid "00:00:05,1000" stamp.
+  const totalMillis = Math.max(0, Math.round(seconds * 1000));
+  const hours = Math.floor(totalMillis / 3_600_000);
+  const minutes = Math.floor((totalMillis % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMillis % 60_000) / 1000);
+  const millis = totalMillis % 1000;
   const pad = (value: number, size = 2) => String(value).padStart(size, '0');
   return `${pad(hours)}:${pad(minutes)}:${pad(secs)}${separator}${pad(millis, 3)}`;
 }

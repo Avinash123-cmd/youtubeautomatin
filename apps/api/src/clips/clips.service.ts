@@ -128,9 +128,19 @@ export class ClipsService {
     if (segments.length === 0) {
       throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'This clip has no transcript to build captions from' });
     }
-    const words: CaptionWord[] = segments.flatMap((segment) =>
-      (segment.words as unknown as Array<{ word: string; start: number; end: number }> | null) ?? [],
-    );
+    // `words` is JSON written by the transcription step; older jobs may have null or a non-array
+    // value, so the shape is checked rather than cast blindly.
+    const words: CaptionWord[] = segments.flatMap((segment) => {
+      const raw = segment.words as unknown;
+      if (!Array.isArray(raw)) return [];
+      return raw.filter(
+        (word): word is CaptionWord =>
+          typeof word === 'object' && word !== null &&
+          typeof (word as CaptionWord).word === 'string' &&
+          Number.isFinite((word as CaptionWord).start) &&
+          Number.isFinite((word as CaptionWord).end),
+      );
+    });
     const cues = buildCues(wordsForWindow(words, clip.startSeconds, clip.endSeconds));
     const base = (clip.title || 'clip').normalize('NFKC').replace(/[^\w\s.-]/g, '').replace(/\s+/g, '-').slice(0, 60) || 'clip';
     if (format === 'txt') {

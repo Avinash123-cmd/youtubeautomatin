@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { env } from '../env';
 
@@ -17,6 +17,11 @@ export class RedisService implements OnModuleDestroy {
     const options = { maxRetriesPerRequest: 2, connectTimeout: 5000, commandTimeout: 5000, enableReadyCheck: true, lazyConnect: false };
     this.client = new Redis(env.REDIS_URL, options);
     this.subscriber = new Redis(env.REDIS_URL, options);
+    const logger = new Logger(RedisService.name);
+    // Do not log the URL or driver message: either can contain credentials. Readiness stays red.
+    for (const connection of [this.client, this.subscriber]) {
+      connection.on('error', () => logger.error('Redis connection failed. Check REDIS_URL, TLS and network access; inspect /api/system/health before routing traffic.'));
+    }
   }
 
   key(...parts: string[]): string {

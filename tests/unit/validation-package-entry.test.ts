@@ -33,8 +33,9 @@ describe('validation workspace runtime entry (no Vitest source aliases)', () => 
     for (const app of ['apps/web', 'apps/api']) {
       const pkg = manifest(app);
       for (const hook of ['predev', 'prebuild', 'pretypecheck']) {
+        const build = 'npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database';
         expect(pkg.scripts[hook]).toBe(app === 'apps/api'
-          ? 'npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database'
+          ? (hook === 'predev' ? 'node ../../scripts/dev-api.cjs --check && ' : '') + build
           : 'npm run build -w @clipforge/validation');
       }
     }
@@ -60,5 +61,5 @@ it('loads all backend runtime workspace entries and generated Prisma models with
   `], { cwd: path.join(root, 'apps/api'), encoding: 'utf8' });
   const pkg = manifest('.');
   expect(pkg.scripts['build:api']).toBe('npm run build -w @clipforge/api');
-  expect(pkg.scripts['start:api']).toBe('npm run start -w @clipforge/api');
+  expect(pkg.scripts['start:api']).toBe('npm run start:prod -w @clipforge/api');
 });

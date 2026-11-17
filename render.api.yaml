@@ -1,0 +1,59 @@
+# Optional native-Node blueprint for the EXISTING backend deployment shape.
+# Select this Blueprint path explicitly; render.yaml remains the Docker stack.
+# Do not provision a second production API inadvertently. Existing manual services
+# must have their dashboard settings updated separately (see docs/render-api-production.md).
+services:
+  - type: web
+    name: youtubeautomatin
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm ci --include=dev && npm run build:api
+    startCommand: npm run start:api
+    healthCheckPath: /api/system/health
+    # Migrations are a controlled release step; do not reset an existing database.
+    # If your plan supports pre-deploy commands, set: npm run db:deploy
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.22.3
+      - key: APP_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_PREFIX
+        value: clipforge
+      - key: SESSION_SECRET
+        sync: false
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: LOG_LEVEL
+        value: info
+      - key: STORAGE_DRIVER
+        sync: false
+      - key: WORK_DIR
+        value: /tmp/clipforge/work
+      # Configure the selected storage driver's additional keys in the dashboard.
+      - key: AI_ENGINE_URL
+        sync: false
+      - key: AI_ENGINE_API_KEY
+        sync: false
+      - key: VIDEO_PROCESSOR_URL
+        sync: false
+      - key: VIDEO_PROCESSOR_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: TELEGRAM_WEBHOOK_URL
+        sync: false

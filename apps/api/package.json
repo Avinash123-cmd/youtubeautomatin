@@ -15,9 +15,10 @@
     "test": "vitest run --root ../.. --config tests/vitest.config.ts",
     "test:integration": "vitest run --root ../.. --config tests/vitest.integration.config.ts",
     "worker:all": "bash scripts/run-workers.sh",
-    "predev": "npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database",
+    "predev": "node ../../scripts/dev-api.cjs --check && npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database",
     "prebuild": "npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database",
-    "pretypecheck": "npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database"
+    "pretypecheck": "npm run build -w @clipforge/validation -w @clipforge/platform-connectors -w @clipforge/database",
+    "start:prod": "node dist/main.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.709.0",

@@ -65,6 +65,12 @@ function supervise({ spawnProcess = spawn, log = console, finish = code => { pro
 }
 
 if (require.main === module) {
+  // Last-resort guard for a misconfigured deployment; production must execute compiled JS.
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true') {
+    console.error('[fatal] Development watcher is forbidden in production/Render. Use npm run start:api from the repository root or npm run start:prod from apps/api.');
+    process.exit(1);
+  }
+  if (process.argv.includes('--check')) process.exit(0);
   const workflow = supervise();
   process.on('SIGINT', () => workflow.shutdown());
   process.on('SIGTERM', () => workflow.shutdown());

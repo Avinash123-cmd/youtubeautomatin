@@ -106,7 +106,9 @@ inventory; never paste secrets into chat or commit a root .env.
 - `SESSION_SECRET`: at least 32 characters. `CREDENTIAL_ENCRYPTION_KEY`: base64 encoding of exactly
   32 random bytes. **Preserve existing values** or sessions/encrypted integration credentials break.
 - `STORAGE_DRIVER` and `WORK_DIR` (for example /tmp/clipforge/work). For local storage additionally
-  `STORAGE_LOCAL_ROOT` and `STORAGE_LOCAL_PUBLIC_BASE_URL` (your actual API origin). Render local disk
+  `STORAGE_LOCAL_ROOT` and `STORAGE_LOCAL_PUBLIC_BASE_URL` (the API origin plus `/media`, not
+  the bare origin). See [Render local storage](render-local-storage.md) for exact values and the
+  private ID-based serving contract; there is no raw-key static file mount. Render local disk
   is ephemeral; durable production media needs configured S3-compatible storage. S3 requires
   `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`; set endpoint/public URL and other
   options for your provider. Do not use invented storage values to suppress validation.

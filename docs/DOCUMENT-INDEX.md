@@ -69,3 +69,7 @@ Rules for this directory:
 ## Production proxy outage investigation
 
 - [Production API/proxy evidence and recovery](production-api-investigation.md) — confirmed missing build-time target, safe upstream diagnostics, environment checks and live verification gates.
+
+## Render local storage
+
+- [Local storage configuration and serving audit](render-local-storage.md) — exact environment values, persistent disk requirements, private media routes and safety checks.

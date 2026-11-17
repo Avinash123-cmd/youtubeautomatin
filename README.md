@@ -68,6 +68,7 @@ FFmpeg 6+, and `yt-dlp` if you want the paste-a-URL flow.
 ```bash
 cp .env.example .env                # fill in every REQUIRED value; nothing is silently defaulted
 npm install
+npm run doctor:youtube              # yt-dlp / ffmpeg / cookies / import limits on this host
 
 # database
 npm run db:generate

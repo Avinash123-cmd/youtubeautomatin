@@ -90,6 +90,17 @@ declare a right to the content, and the operator of the deployment is responsibl
 feature is used. If you only want users to process their own footage, set
 `YOUTUBE_IMPORT_ENABLED=false`: the upload and direct-URL paths keep working.
 
+## Preflight (run this before blaming the code)
+
+```bash
+npm run doctor:youtube
+```
+
+It checks `YOUTUBE_IMPORT_ENABLED`, the `yt-dlp` binary and its version, `ffmpeg`, the cookie file and
+then prints the limits that will be applied. It downloads nothing, so it is safe to run in production
+and takes under a second. Exit codes: `0` ready, `1` import disabled by configuration, `2` a tool is
+missing.
+
 ## Troubleshooting
 
 | Symptom | Cause | Action |

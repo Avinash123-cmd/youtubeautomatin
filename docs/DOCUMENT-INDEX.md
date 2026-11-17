@@ -65,3 +65,7 @@ Rules for this directory:
 ## TypeScript build toolchain
 
 - [Render compiler consistency](typescript-build-toolchain.md) — locked compiler version, inherited configs, drift guard, full-build evidence and Render settings.
+
+## Production proxy outage investigation
+
+- [Production API/proxy evidence and recovery](production-api-investigation.md) — confirmed missing build-time target, safe upstream diagnostics, environment checks and live verification gates.

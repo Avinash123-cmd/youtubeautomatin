@@ -5,4 +5,4 @@
     "seed": "tsx src/seed.ts", "test": "vitest run" },
   "prisma": { "seed": "tsx src/seed.ts" },
   "dependencies": { "@prisma/client": "6.2.1" },
-  "devDependencies": { "prisma": "6.2.1", "tsx": "4.19.2", "typescript": "5.7.2", "vitest": "2.1.8" } }
+  "devDependencies": { "prisma": "6.2.1", "tsx": "4.19.2", "typescript": "5.9.3", "vitest": "2.1.8" } }

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { logUpstreamFailure, upstreamFailureCode } from '../../lib/upstream-diagnostics';
 
 /**
  * Deployment self-check for the dashboard.
@@ -34,6 +35,7 @@ export async function GET() {
   const started = Date.now();
   let status: number | null = null;
   let error: string | null = null;
+  let failureCode: string | null = null;
   let identity: 'clipforge' | 'other' | 'unknown' = 'unknown';
   try {
     const response = await fetch(`${TARGET}/api/system/health`, {
@@ -49,10 +51,16 @@ export async function GET() {
       identity = 'other';
     }
   } catch (cause) {
-    error = (cause as Error)?.name === 'TimeoutError' ? 'Timed out after 5s' : (cause as Error)?.message ?? 'Request failed';
+    failureCode = upstreamFailureCode(cause);
+    error = failureCode === 'UPSTREAM_TIMEOUT' ? 'Timed out after 5s' : 'Upstream connection failed';
   }
   const latencyMs = Date.now() - started;
   const ok = identity === 'clipforge' && status !== null && status >= 200 && status < 300;
+
+  if (!ok) {
+    failureCode = NOT_CONFIGURED ? 'API_TARGET_NOT_CONFIGURED' : failureCode ?? (identity === 'other' ? 'UPSTREAM_WRONG_SERVICE' : 'UPSTREAM_UNHEALTHY');
+    logUpstreamFailure(TARGET, status, latencyMs, failureCode);
+  }
 
   return NextResponse.json(
     {
@@ -60,7 +68,7 @@ export async function GET() {
       service: 'clipforge-dashboard',
       apiTarget: TARGET || null,
       origin: new URL(TARGET || 'http://invalid').origin,
-      upstream: { status, latencyMs, error },
+      upstream: { status, latencyMs, error, failureCode },
       identity,
       region: process.env.VERCEL_REGION ?? null,
       commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,

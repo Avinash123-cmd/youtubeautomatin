@@ -49,7 +49,7 @@
     "prebuild:api": "npm run check:typescript"
   },
   "devDependencies": {
-    "typescript": "5.7.2",
+    "typescript": "5.9.3",
     "tsx": "4.19.2",
     "prettier": "3.4.2"
   },

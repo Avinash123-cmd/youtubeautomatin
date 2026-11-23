@@ -86,6 +86,81 @@ class TCPConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             sock.close()
             limiter.close()
 
+    async def test_bounded_queue_overflow_and_wait_timeout_over_tcp(self):
+        second_admitted = asyncio.Event()
+
+        class TrackingLimiter(WorkLimiter):
+            def __init__(self):
+                super().__init__(1, 'tcp-bounded', max_waiting=1, wait_seconds=1)
+                self.requests = 0
+
+            async def _wait_for_disconnect(self, request):
+                self.requests += 1
+                if self.requests == 2:
+                    second_admitted.set()
+                await super()._wait_for_disconnect(request)
+
+        limiter = TrackingLimiter()
+        first_started, release = threading.Event(), threading.Event()
+        calls = []
+        app = FastAPI()
+
+        def work(value):
+            calls.append(value)
+            if value == 'first':
+                first_started.set()
+                if not release.wait(10):
+                    raise RuntimeError('test did not release work')
+            return value
+
+        @app.post('/work')
+        async def endpoint(payload: Payload, request: Request):
+            return {'value': await limiter.run(request, work, payload.value)}
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('127.0.0.1', 0))
+        sock.listen(128)
+        port = sock.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, log_level='critical', lifespan='off'))
+        server_task = asyncio.create_task(server.serve(sockets=[sock]))
+        tasks = []
+        try:
+            async def wait_until_started():
+                while not server.started:
+                    if server_task.done():
+                        await server_task
+                        raise RuntimeError('server exited before listening')
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(wait_until_started(), 5)
+            async with httpx.AsyncClient(base_url=f'http://127.0.0.1:{port}', timeout=5) as client:
+                first = asyncio.create_task(client.post('/work', json={'value': 'first'}))
+                tasks.append(first)
+                self.assertTrue(await asyncio.to_thread(first_started.wait, 3))
+                second = asyncio.create_task(client.post('/work', json={'value': 'second'}))
+                tasks.append(second)
+                await asyncio.wait_for(second_admitted.wait(), 2)
+                overflow = await client.post('/work', json={'value': 'overflow'})
+                self.assertEqual(overflow.status_code, 503)
+                self.assertEqual(overflow.headers['retry-after'], '5')
+                self.assertEqual(overflow.json()['detail']['code'], 'SERVICE_CAPACITY_EXHAUSTED')
+                expired = await asyncio.wait_for(second, 3)
+                self.assertEqual(expired.status_code, 503)
+                self.assertEqual(expired.json()['detail']['code'], 'SERVICE_CAPACITY_EXHAUSTED')
+                self.assertEqual(calls, ['first'])
+                release.set()
+                self.assertEqual((await first).status_code, 200)
+                self.assertEqual((await client.post('/work', json={'value': 'after'})).json(), {'value': 'after'})
+                self.assertEqual(calls, ['first', 'after'])
+        finally:
+            release.set()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            server.should_exit = True
+            await asyncio.wait_for(server_task, 5)
+            sock.close()
+            limiter.close()
+
 
 if __name__ == '__main__':
     unittest.main()

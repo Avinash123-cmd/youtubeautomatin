@@ -41,6 +41,7 @@ describe('media inspection dependency failures', () => {
   it.each([
     ['network failure', () => Promise.reject(new Error('network secret'))],
     ['server failure', () => Promise.resolve(new Response('private error', { status: 503 }))],
+    ['probe capacity refusal', () => Promise.resolve(new Response(JSON.stringify({ detail: { code: 'SERVICE_CAPACITY_EXHAUSTED', retryable: true } }), { status: 503, headers: { 'retry-after': '5' } }))],
     ['bad service key', () => Promise.resolve(new Response('{}', { status: 401 }))],
     ['missing shared media path', () => Promise.resolve(new Response(JSON.stringify({ detail: { code: 'MEDIA_NOT_FOUND' } }), { status: 422 }))],
     ['invalid success JSON', () => Promise.resolve(new Response('not json', { status: 200 }))],

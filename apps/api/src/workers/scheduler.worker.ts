@@ -8,8 +8,6 @@
  *  4. apply configured retention policies (soft-delete + delete objects),
  *  5. clean up stale work directories.
  */
-import { readdir, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { prisma, decryptSecret, ConfigurationService } from '@clipforge/database';
 import { InstagramConnector } from '@clipforge/platform-connectors';
 import { CONFIG_KEYS } from '@clipforge/shared-types';
@@ -21,6 +19,7 @@ import { StorageService } from '../storage/storage.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { scanById } from '../common/services/scan-by-id';
 import { SingleFlight } from '../common/services/single-flight';
+import { cleanWorkDirs } from './clean-work-dirs';
 import { createRuntime, wireShutdown } from './base';
 
 const runtime = createRuntime('scheduler', 1);
@@ -145,19 +144,6 @@ async function applyRetention(): Promise<void> {
   }
 }
 
-async function cleanWorkDirs(): Promise<void> {
-  const entries = await readdir(env.WORK_DIR).catch(() => [] as string[]);
-  const cutoff = Date.now() - 48 * 3600 * 1000;
-  for (const entry of entries) {
-    if (entry === 'uploads' || entry === 'imports') continue;
-    const full = join(env.WORK_DIR, entry);
-    const info = await stat(full).catch(() => null);
-    if (info?.isDirectory() && info.mtimeMs < cutoff) {
-      await rm(full, { recursive: true, force: true }).catch(() => undefined);
-    }
-  }
-}
-
 /**
  * Scheduled publishing watch.
  *
@@ -275,7 +261,7 @@ async function loop(): Promise<void> {
   if (currentTick % 900 === 0) {
     tasks.push(maintenance.run('retention', async () => {
       await applyRetention().catch((error: Error) => runtime.logger.error(`retention: ${error.message}`));
-      await cleanWorkDirs().catch((error: Error) => runtime.logger.error(`cleanup: ${error.message}`));
+      await cleanWorkDirs(env.WORK_DIR).catch((error: Error) => runtime.logger.error(`cleanup: ${error.message}`));
     }));
   }
   if (currentTick % 30 === 0) {

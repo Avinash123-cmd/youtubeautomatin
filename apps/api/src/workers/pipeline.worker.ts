@@ -4,9 +4,8 @@ import { deferContendedJob, currentLeaseOwner, withLeaseScope } from './lease-co
  * Pipeline worker — owns stages PROBING → TRANSCRIBING → AI_ANALYSIS →
  * CLIP_SELECTION → RENDERING hand-off.
  *
- * Durability: every stage transition is a committed database row before the work
- * starts, so a crash resumes from the last successful stage and never re-does
- * expensive work silently.
+ * Stage transitions are durable before work starts. Recovery resumes from the
+ * last recorded checkpoint; work not durably committed before a crash may run again.
  */
 import { join } from 'node:path';
 import { mkdir, rm } from 'node:fs/promises';
@@ -21,6 +20,7 @@ import { StorageService } from '../storage/storage.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { createRuntime, createWorker, wireShutdown, startLeaseRenewal } from './base';
 import { aiEngine, videoProcessor, ServiceCallError } from './services-client';
+import { capacityAwareCalls, JobNoLongerActiveError, type CapacityAwareCall } from './service-capacity';
 import { YoutubeImportService } from '../sources/youtube/youtube-import.service';
 import { ingestYouTubeSource } from '../sources/youtube/ingest';
 import { YoutubeIngestError } from '../sources/youtube/ytdlp';
@@ -62,16 +62,24 @@ async function handleLeased(job: Job<{ jobId: string; resumeFrom?: string }>): P
     const current = await prisma.processingJob.findUnique({ where: { id: jobId }, select: { status: true } });
     return deferContendedJob(job, current?.status ?? null);
   }
-  const stopRenewal = startLeaseRenewal(jobId, currentLeaseOwner(runtime.workerId), runtime.logger);
+  const owner = currentLeaseOwner(runtime.workerId);
+  const stopRenewal = startLeaseRenewal(jobId, owner, runtime.logger);
+  const callService = capacityAwareCalls(jobId, owner, runtime.logger);
   try {
-    await runPipeline(jobId, resumeFrom);
+    await runPipeline(jobId, resumeFrom, callService);
+  } catch (error) {
+    if (error instanceof JobNoLongerActiveError) {
+      runtime.logger.info(`job ${jobId} stopped while waiting for service capacity`);
+      return;
+    }
+    throw error;
   } finally {
     stopRenewal();
-    await releaseJobLease(jobId, currentLeaseOwner(runtime.workerId)).catch(() => undefined);
+    await releaseJobLease(jobId, owner).catch(() => undefined);
   }
 }
 
-async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
+async function runPipeline(jobId: string, resumeFrom: string | undefined, callService: CapacityAwareCall): Promise<void> {
   const job = await prisma.processingJob.findUnique({
     where: { id: jobId },
     include: { sourceVideo: true, stages: true },
@@ -109,7 +117,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         if (job.sourceVideo.kind !== 'YOUTUBE') {
           throw new PipelineAbortError('SOURCE_NOT_STORED', 'Source has no stored object', { retryable: false });
         }
-        await ingestYouTube(jobId, job.workspaceId, job.sourceVideo, workDir);
+        await ingestYouTube(jobId, job.workspaceId, job.sourceVideo, workDir, callService);
         const stored = await prisma.sourceVideo.findUnique({ where: { id: job.sourceVideoId }, select: { storageKey: true } });
         if (!stored?.storageKey) throw new PipelineAbortError('INGEST_NOT_STORED', 'YouTube ingest did not store the media', { retryable: true });
         await storage.downloadToFile(stored.storageKey, sourcePath);
@@ -124,7 +132,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         details: [['Source', job.sourceVideo.originalFileName ?? job.sourceVideoId], ['Kind', job.sourceVideo.kind]],
         jobId,
       });
-      const probe = await videoProcessor.probe(sourcePath);
+      const probe = await callService(() => videoProcessor.probe(sourcePath));
       await prisma.sourceVideo.update({
         where: { id: job.sourceVideoId },
         data: {
@@ -170,11 +178,11 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         details: [['Model', liveConfig.aiTextModel], ['Language', configuration.subtitleLanguage]],
         jobId,
       });
-      const result = await aiEngine.transcribe({
+      const result = await callService(() => aiEngine.transcribe({
         job_id: jobId,
         video_path: sourcePath,
         language: configuration.subtitleLanguage,
-      });
+      }));
       const transcription = result.transcription;
       transcript = await prisma.transcript.create({
         data: {
@@ -279,7 +287,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       })),
     };
 
-    const analysis = await aiEngine.analyze({
+    const analysis = await callService(() => aiEngine.analyze({
       job_id: jobId,
       video_path: sourcePath,
       text_model: liveConfig.aiTextModel,
@@ -292,7 +300,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       language: configuration.subtitleLanguage,
       enable_vision: true,
       transcript: transcriptPayload,
-    });
+    }));
 
     // Text and vision calls are priced separately: vision batches dominate prompt tokens, and
     // lumping them together hides which stage is expensive.
@@ -391,7 +399,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       ? await prisma.brandProfile.findFirst({ where: { id: configuration.brandProfileId, workspaceId: job.workspaceId } })
       : await prisma.brandProfile.findFirst({ where: { workspaceId: job.workspaceId, isDefault: true } });
 
-    const captionResponse = await aiEngine.captions({
+    const captionResponse = await callService(() => aiEngine.captions({
       model: liveConfig.aiTextModel,
       brand_voice: brandProfile?.brandVoice ?? null,
       audience: brandProfile?.audienceDescription ?? null,
@@ -403,7 +411,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
         hook: String(entry.candidate.hook ?? ''),
         content_category: String(entry.candidate.content_category ?? 'educational'),
       })),
-    });
+    }));
 
     const clipIds: string[] = [];
     let metadataFailures = 0;
@@ -544,7 +552,7 @@ async function runPipeline(jobId: string, resumeFrom?: string): Promise<void> {
       }
     });
   } catch (error) {
-    if (error instanceof JobLeaseLostError) throw error;
+    if (error instanceof JobLeaseLostError || error instanceof JobNoLongerActiveError) throw error;
     const serviceError = error instanceof ServiceCallError ? error : null;
     const abort = error instanceof PipelineAbortError ? error : null;
     const retryable = abort ? abort.options.retryable : serviceError ? serviceError.retryable : true;
@@ -662,7 +670,7 @@ interface IngestSourceRow {
   originalFileName: string | null;
 }
 
-async function ingestYouTube(jobId: string, workspaceId: string, source: IngestSourceRow, workDir: string): Promise<void> {
+async function ingestYouTube(jobId: string, workspaceId: string, source: IngestSourceRow, workDir: string, callService: CapacityAwareCall): Promise<void> {
   let lastWrite = 0;
   let lastPercent = -1;
 
@@ -705,7 +713,7 @@ async function ingestYouTube(jobId: string, workspaceId: string, source: IngestS
   }
 
   const liveConfig = await appConfig.resolveForProcessing(workspaceId);
-  const probe = await videoProcessor.probe(ingested.path);
+  const probe = await callService(() => videoProcessor.probe(ingested.path));
   if (!Number.isFinite(probe.duration_seconds) || probe.duration_seconds <= 0) {
     throw new PipelineAbortError('INGEST_UNREADABLE_MEDIA', 'The downloaded file has no readable duration', { retryable: false });
   }

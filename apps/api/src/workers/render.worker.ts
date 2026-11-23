@@ -14,7 +14,8 @@ import { sha256File } from '@clipforge/database';
 import { AppConfigService } from '../common/services/config.service';
 import { StorageService } from '../storage/storage.service';
 import { createRuntime, createWorker, wireShutdown, startLeaseRenewal } from './base';
-import { videoProcessor, ServiceCallError } from './services-client';
+import { videoProcessor } from './services-client';
+import { capacityAwareCalls, JobNoLongerActiveError, type CapacityAwareCall } from './service-capacity';
 import { eligiblePublishingAccounts } from './publishing-accounts';
 
 const runtime = createRuntime('render', env.WORKER_CONCURRENCY_RENDER);
@@ -42,16 +43,24 @@ async function handleLeased(job: Job<{ clipId: string; jobId: string }>): Promis
     const current = await prisma.processingJob.findUnique({ where: { id: jobId }, select: { status: true } });
     return deferContendedJob(job, current?.status ?? null);
   }
-  const stopRenewal = startLeaseRenewal(jobId, currentLeaseOwner(runtime.workerId), runtime.logger);
+  const owner = currentLeaseOwner(runtime.workerId);
+  const stopRenewal = startLeaseRenewal(jobId, owner, runtime.logger);
+  const callService = capacityAwareCalls(jobId, owner, runtime.logger);
   try {
-    await renderClip(clipId, jobId);
+    await renderClip(clipId, jobId, callService);
+  } catch (error) {
+    if (error instanceof JobNoLongerActiveError) {
+      runtime.logger.info(`job ${jobId} stopped while waiting for service capacity`);
+      return;
+    }
+    throw error;
   } finally {
     stopRenewal();
-    await releaseJobLease(jobId, currentLeaseOwner(runtime.workerId)).catch(() => undefined);
+    await releaseJobLease(jobId, owner).catch(() => undefined);
   }
 }
 
-async function renderClip(clipId: string, jobId: string): Promise<void> {
+async function renderClip(clipId: string, jobId: string, callService: CapacityAwareCall): Promise<void> {
   const clip = await prisma.generatedClip.findUnique({
     where: { id: clipId },
     include: { job: { include: { sourceVideo: true } }, candidate: true, variants: true },
@@ -141,7 +150,7 @@ async function renderClip(clipId: string, jobId: string): Promise<void> {
 
   const outputPath = join(workDir, `clip-${clipId}-${clip.durationKind}s.mp4`);
   const renderStarted = Date.now();
-  const result = await videoProcessor.render({
+  const result = await callService(() => videoProcessor.render({
     source_path: sourcePath,
     output_path: outputPath,
     start: clip.startSeconds,
@@ -160,7 +169,7 @@ async function renderClip(clipId: string, jobId: string): Promise<void> {
     watermark_position: brandProfile?.watermarkPosition ?? null,
     intro_path: introPath,
     outro_path: outroPath,
-  });
+  }));
 
   const checksum = await sha256File(outputPath);
   const key = `ws/${clip.workspaceId}/clips/${clipId}/${clip.durationKind}s-${checksum.slice(0, 12)}.mp4`;
@@ -374,5 +383,3 @@ void main().catch((error) => {
   runtime.logger.error(`render worker failed to start: ${(error as Error).message}`);
   process.exit(1);
 });
-
-void ServiceCallError;

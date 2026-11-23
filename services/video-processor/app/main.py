@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 
 from services.media_paths import media_path
-from services.work_limits import WorkLimiter, limit_from_env
+from services.work_limits import WorkLimiter, limit_from_env, waiting_limit_from_env
 
 from . import audio as audio_mod
 from . import framing as framing_mod
@@ -32,8 +32,14 @@ logger = logging.getLogger("video-processor")
 app = FastAPI(title="ClipForge Video Processor", version="1.0.0")
 # Bound FFmpeg-heavy work per process. Probes have a separate smaller pool so
 # an in-progress render cannot block upload validation or spawn unlimited ffprobe processes.
-_work_limiter = WorkLimiter(limit_from_env("VIDEO_PROCESSOR_MAX_CONCURRENT_WORK"), "video-work")
-_probe_limiter = WorkLimiter(limit_from_env("VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES", 2), "video-probe")
+_work_limiter = WorkLimiter(
+    limit_from_env("VIDEO_PROCESSOR_MAX_CONCURRENT_WORK"), "video-work",
+    max_waiting=waiting_limit_from_env("VIDEO_PROCESSOR_MAX_WAITING_WORK"),
+)
+_probe_limiter = WorkLimiter(
+    limit_from_env("VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES", 2), "video-probe",
+    max_waiting=waiting_limit_from_env("VIDEO_PROCESSOR_MAX_WAITING_PROBES"),
+)
 
 API_KEY = os.environ.get("VIDEO_PROCESSOR_API_KEY")
 WORK_DIR = os.environ.get("WORK_DIR", "/data/work")

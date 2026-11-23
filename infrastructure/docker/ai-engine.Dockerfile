@@ -16,7 +16,7 @@ WORKDIR /srv
 COPY services/ai-engine/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=app:app services/ai-engine/app ./app
-COPY --chown=app:app services/media_paths.py ./services/media_paths.py
+COPY --chown=app:app services/media_paths.py services/work_limits.py ./services/
 USER app
 EXPOSE 8100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

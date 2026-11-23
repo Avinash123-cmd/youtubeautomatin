@@ -66,7 +66,7 @@ Requirements: Node 20.20+ (the repo pins 22.22.3), Python 3.11+, PostgreSQL 16+,
 FFmpeg 6+, and `yt-dlp` if you want the paste-a-URL flow.
 
 ```bash
-cp .env.example .env                # fill in every REQUIRED value; nothing is silently defaulted
+cp .env.example .env                # replace example.com origins and fill in every REQUIRED value
 npm install
 npm run doctor:youtube              # yt-dlp / ffmpeg / cookies / import limits on this host
 
@@ -82,8 +82,8 @@ npm run dev:web                     # http://localhost:3000
 # python services (one venv is enough)
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r services/ai-engine/requirements.txt -r services/video-processor/requirements.txt
-uvicorn app.main:app --app-dir services/ai-engine --port 8100
-uvicorn app.main:app --app-dir services/video-processor --port 8200
+PYTHONPATH=. uvicorn app.main:app --app-dir services/ai-engine --port 8100
+PYTHONPATH=. uvicorn app.main:app --app-dir services/video-processor --port 8200
 
 # background workers
 bash apps/api/scripts/run-workers.sh
@@ -100,8 +100,8 @@ contains FFmpeg and yt-dlp).
 | Area | Variables |
 | --- | --- |
 | Core | `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, `APP_URL`, `ALLOWED_ORIGINS`, `WORK_DIR` |
-| AI | `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, `AI_ENGINE_URL`, `AI_ENGINE_API_KEY` |
-| Rendering | `VIDEO_PROCESSOR_URL`, `VIDEO_PROCESSOR_API_KEY`, `FFMPEG_PATH`, `FFPROBE_PATH` |
+| AI | `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, `AI_ENGINE_URL`, `AI_ENGINE_API_KEY`, `AI_ENGINE_MAX_CONCURRENT_WORK` |
+| Rendering | `VIDEO_PROCESSOR_URL`, `VIDEO_PROCESSOR_API_KEY`, `FFMPEG_PATH`, `FFPROBE_PATH`, `VIDEO_PROCESSOR_MAX_CONCURRENT_WORK`, `VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES` |
 | YouTube import | `YOUTUBE_IMPORT_ENABLED`, `YTDLP_PATH`, `YOUTUBE_IMPORT_MAX_HEIGHT`, `YOUTUBE_IMPORT_TIMEOUT_SECONDS`, optional `YOUTUBE_COOKIES_FILE` |
 | Publishing | `YOUTUBE_CLIENT_ID/SECRET/REDIRECT_URI`, `META_APP_ID/SECRET/REDIRECT_URI`, `META_GRAPH_API_VERSION` |
 | Storage | `STORAGE_DRIVER=local|s3`, plus the matching S3 settings (Instagram publishing needs a public HTTPS media URL) |

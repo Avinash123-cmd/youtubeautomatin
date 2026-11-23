@@ -42,8 +42,9 @@ export class SystemService {
   async redisHealth(): Promise<ComponentHealth> {
     const started = Date.now();
     try {
-      const pong = await boundedProbe(() => this.redis.client.ping(), env.HEALTHCHECK_TIMEOUT_MS);
-      return { component: 'redis', status: pong === 'PONG' ? 'healthy' : 'degraded', message: `PING -> ${pong}`, latencyMs: Date.now() - started };
+      const [pong, limiterPong] = await boundedProbe(() => Promise.all([this.redis.client.ping(), this.redis.pingRateLimiter()]), env.HEALTHCHECK_TIMEOUT_MS);
+      const healthy = pong === 'PONG' && limiterPong === 'PONG';
+      return { component: 'redis', status: healthy ? 'healthy' : 'degraded', message: healthy ? 'General and rate-limit connections answered PONG' : 'Unexpected Redis PING response', latencyMs: Date.now() - started };
     } catch (error) {
       return { component: 'redis', status: 'down', message: 'Dependency request failed or timed out; check service configuration, credentials/TLS and connectivity' };
     }

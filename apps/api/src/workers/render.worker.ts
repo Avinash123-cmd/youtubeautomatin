@@ -15,6 +15,7 @@ import { AppConfigService } from '../common/services/config.service';
 import { StorageService } from '../storage/storage.service';
 import { createRuntime, createWorker, wireShutdown, startLeaseRenewal } from './base';
 import { videoProcessor, ServiceCallError } from './services-client';
+import { eligiblePublishingAccounts } from './publishing-accounts';
 
 const runtime = createRuntime('render', env.WORKER_CONCURRENCY_RENDER);
 const storage = new StorageService();
@@ -289,9 +290,7 @@ async function maybeAdvanceJob(jobId: string): Promise<void> {
   }
 
   // Automatic publishing: create one job per platform per clip.
-  const accounts = await prisma.connectedAccount.findMany({
-    where: { workspaceId: job.workspaceId, platform: { in: configuration.platforms }, status: 'CONNECTED', publishingEnabled: true },
-  });
+  const accounts = await eligiblePublishingAccounts(job.workspaceId, configuration.platforms);
 
   const queued = await prisma.$transaction(async (tx) => {
     let created = 0;

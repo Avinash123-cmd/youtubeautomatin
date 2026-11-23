@@ -6,6 +6,7 @@ whole seconds: clip boundaries and burned-in subtitles depend on them.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,21 +16,24 @@ from .timing import validate_transcript
 logger = logging.getLogger("ai-engine.transcribe")
 
 _model_cache: dict[tuple[str, str, str], Any] = {}
+_model_cache_lock = threading.Lock()
 
 
 def _load_model(settings: Settings):
     key = (settings.whisper_model, settings.whisper_device, settings.whisper_compute_type)
-    if key in _model_cache:
-        return _model_cache[key]
-    from faster_whisper import WhisperModel  # imported lazily: heavy dependency
+    # Multiple concurrent requests must not allocate the same heavy model twice.
+    with _model_cache_lock:
+        if key in _model_cache:
+            return _model_cache[key]
+        from faster_whisper import WhisperModel  # imported lazily: heavy dependency
 
-    model = WhisperModel(
-        settings.whisper_model,
-        device=settings.whisper_device,
-        compute_type=settings.whisper_compute_type,
-    )
-    _model_cache[key] = model
-    return model
+        model = WhisperModel(
+            settings.whisper_model,
+            device=settings.whisper_device,
+            compute_type=settings.whisper_compute_type,
+        )
+        _model_cache[key] = model
+        return model
 
 
 def transcribe(settings: Settings, audio_path: str | Path, language: str | None = None) -> dict:

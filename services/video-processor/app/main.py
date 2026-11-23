@@ -9,16 +9,18 @@ Endpoints
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
 import subprocess
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 
 from services.media_paths import media_path
+from services.work_limits import WorkLimiter, limit_from_env
 
 from . import audio as audio_mod
 from . import framing as framing_mod
@@ -28,6 +30,10 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "info").upper())
 logger = logging.getLogger("video-processor")
 
 app = FastAPI(title="ClipForge Video Processor", version="1.0.0")
+# Bound FFmpeg-heavy work per process. Probes have a separate smaller pool so
+# an in-progress render cannot block upload validation or spawn unlimited ffprobe processes.
+_work_limiter = WorkLimiter(limit_from_env("VIDEO_PROCESSOR_MAX_CONCURRENT_WORK"), "video-work")
+_probe_limiter = WorkLimiter(limit_from_env("VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES", 2), "video-probe")
 
 API_KEY = os.environ.get("VIDEO_PROCESSOR_API_KEY")
 WORK_DIR = os.environ.get("WORK_DIR", "/data/work")
@@ -96,12 +102,18 @@ class RenderRequest(BaseModel):
 
 
 @app.get("/live")
-def live() -> dict:
+async def live() -> dict:
     return {"status": "ok", "service": "clipforge-video-processor"}
 
 
 @app.get("/health")
-def health():
+async def health():
+    # Keep the blocking tool checks separate from the dedicated render/probe
+    # pools and from FastAPI's synchronous dependency thread pool.
+    return await asyncio.to_thread(_health_status)
+
+
+def _health_status():
     try:
         tools = {}
         for name, executable in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE)):
@@ -118,7 +130,11 @@ def health():
 
 
 @app.post("/probe", dependencies=[Depends(require_api_key)])
-def probe(request: ProbeRequest) -> dict:
+async def probe(request: ProbeRequest, http_request: Request) -> dict:
+    return await _probe_limiter.run(http_request, _probe_work, request)
+
+
+def _probe_work(request: ProbeRequest) -> dict:
     request.path = media_path(request.path, WORK_DIR)
     if not os.path.isfile(request.path):
         raise HTTPException(status_code=422, detail={"code": "NOT_FOUND", "message": f"{request.path} does not exist"})
@@ -143,13 +159,21 @@ def probe(request: ProbeRequest) -> dict:
 
 
 @app.post("/audio-analysis", dependencies=[Depends(require_api_key)])
-def audio_analysis(request: AudioRequest) -> dict:
+async def audio_analysis(request: AudioRequest, http_request: Request) -> dict:
+    return await _work_limiter.run(http_request, _audio_analysis_work, request)
+
+
+def _audio_analysis_work(request: AudioRequest) -> dict:
     request.path = media_path(request.path, WORK_DIR)
     return audio_mod.analyse(FFMPEG, request.path, request.start, request.duration)
 
 
 @app.post("/validate", dependencies=[Depends(require_api_key)])
-def validate(request: ValidateRequest) -> dict:
+async def validate(request: ValidateRequest, http_request: Request) -> dict:
+    return await _work_limiter.run(http_request, _validate_work, request)
+
+
+def _validate_work(request: ValidateRequest) -> dict:
     request.path = media_path(request.path, WORK_DIR)
     return renderer.validate_output(
         ffmpeg_path=FFMPEG,
@@ -163,7 +187,11 @@ def validate(request: ValidateRequest) -> dict:
 
 
 @app.post("/render", dependencies=[Depends(require_api_key)])
-def render(request: RenderRequest) -> dict:
+async def render(request: RenderRequest, http_request: Request) -> dict:
+    return await _work_limiter.run(http_request, _render_work, request)
+
+
+def _render_work(request: RenderRequest) -> dict:
     request.source_path = media_path(request.source_path, WORK_DIR)
     request.output_path = media_path(request.output_path, WORK_DIR, output=True)
     for field in ('watermark_path', 'intro_path', 'outro_path', 'background_music_path'):

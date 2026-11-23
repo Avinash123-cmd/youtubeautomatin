@@ -7,7 +7,11 @@ import { JobAnalysis } from '../../apps/web/components/job-analysis';
 beforeEach(() => { state.data = { transcript: null, segments: [], segmentCount: 0, candidates: [], candidateCount: 0 }; state.error = null; });
 const render = (terminal = false) => renderToStaticMarkup(createElement(JobAnalysis, { jobId: 'owned-job', terminal }));
 it('renders empty results honestly and polls only a live job', () => {
-  expect(render()).toContain('No transcript yet'); expect(state.options.refetchInterval).toBe(5000);
+  expect(render()).toContain('No transcript yet');
+  const query = { state: { error: null as Error | null, errorUpdateCount: 0, dataUpdateCount: 1 } };
+  expect(state.options.refetchInterval(query)).toBe(5000);
+  query.state.error = new Error('down'); query.state.errorUpdateCount = 1;
+  expect(state.options.refetchInterval(query)).toBe(10000);
   render(true); expect(state.options.refetchInterval).toBe(false);
   expect(state.options.queryKey).toEqual(['job-analysis', 'owned-job', 1]);
 });

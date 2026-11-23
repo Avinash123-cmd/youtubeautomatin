@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BadRequestException, ServiceUnavailableException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { createWriteStream } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { mkdir, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -285,45 +286,69 @@ export class SourcesService {
         });
       }
       parts = orderedParts;
-      await this.storage.completeMultipartUpload(source.storageKey, uploadId, parts);
-      localPathForProbe = join(env.WORK_DIR, 'validation', `${sourceVideoId}.mp4`);
-      await mkdir(dirname(localPathForProbe), { recursive: true });
-      sizeBytes = await this.storage.downloadToFile(source.storageKey, localPathForProbe);
+      try {
+        await this.storage.completeMultipartUpload(source.storageKey, uploadId, parts);
+      } catch (error) {
+        // A previous completion can succeed before a probe outage or a lost response.
+        // Only recover the specific consumed-upload error, and only when its object exists.
+        if (!(error instanceof Error) || error.name !== 'NoSuchUpload' || !(await this.storage.exists(source.storageKey))) throw error;
+      }
+      // Concurrent retries must not delete or replace each other's validation file.
+      localPathForProbe = join(env.WORK_DIR, 'validation', `${sourceVideoId}-${randomUUID()}.mp4`);
+      try {
+        await mkdir(dirname(localPathForProbe), { recursive: true });
+        sizeBytes = await this.storage.downloadToFile(source.storageKey, localPathForProbe);
+        const declared = source.sizeBytes ? Number(source.sizeBytes) : 0;
+        if (declared > 0 && sizeBytes !== declared) {
+          throw new BadRequestException({ code: 'VALIDATION_FAILED', message: `Uploaded object is ${sizeBytes} bytes, expected ${declared}` });
+        }
+      } catch (error) {
+        await rm(localPathForProbe, { force: true }).catch(() => this.logger.warn('Could not remove temporary S3 validation file'));
+        throw error;
+      }
     }
 
-    // Persist the rights declaration *before* validation so it is auditable even on rejection.
-    await prisma.sourceVideo.update({
-      where: { id: sourceVideoId },
-      data: {
-        rightsDeclaration: {
-          accepted: true,
-          acceptedAt: new Date().toISOString(),
-          acceptedByUserId: ctx.userId,
-          statement: rights.statement,
+    let report: Awaited<ReturnType<MediaValidationService['validate']>>;
+    try {
+      // Persist the rights declaration *before* validation so it is auditable even on rejection.
+      await prisma.sourceVideo.update({
+        where: { id: sourceVideoId },
+        data: {
+          rightsDeclaration: {
+            accepted: true,
+            acceptedAt: new Date().toISOString(),
+            acceptedByUserId: ctx.userId,
+            statement: rights.statement,
+          },
         },
-      },
-    });
-    await appendAuditLog({
-      workspaceId: ctx.workspaceId,
-      userId: ctx.userId,
-      action: 'RIGHTS_DECLARED',
-      targetType: 'SourceVideo',
-      targetId: sourceVideoId,
-      summary: 'Rights declaration accepted for source media',
-      metadata: { statement: rights.statement },
-      ipAddress: ctx.ip,
-      userAgent: ctx.userAgent,
-    });
+      });
+      await appendAuditLog({
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        action: 'RIGHTS_DECLARED',
+        targetType: 'SourceVideo',
+        targetId: sourceVideoId,
+        summary: 'Rights declaration accepted for source media',
+        metadata: { statement: rights.statement },
+        ipAddress: ctx.ip,
+        userAgent: ctx.userAgent,
+      });
 
-    const configuration = await this.config.resolveForProcessing(ctx.workspaceId);
-    const report = await this.media.validate({
-      filePath: localPathForProbe,
-      originalFileName: source.originalFileName ?? 'upload.mp4',
-      declaredMimeType: source.declaredMimeType,
-      sizeBytes,
-      maxFileSizeBytes: configuration.maxFileSizeBytes,
-      maxDurationSeconds: configuration.maxDurationSeconds,
-    });
+      const configuration = await this.config.resolveForProcessing(ctx.workspaceId);
+      report = await this.media.validate({
+        filePath: localPathForProbe,
+        originalFileName: source.originalFileName ?? 'upload.mp4',
+        declaredMimeType: source.declaredMimeType,
+        sizeBytes,
+        maxFileSizeBytes: configuration.maxFileSizeBytes,
+        maxDurationSeconds: configuration.maxDurationSeconds,
+      });
+    } finally {
+      // Keep local upload staging for a transient retry, but S3 already has the object.
+      if (this.storage.driver === 's3') {
+        await rm(localPathForProbe, { force: true }).catch(() => this.logger.warn('Could not remove temporary S3 validation file'));
+      }
+    }
 
     if (!report.passed) {
       await prisma.sourceVideo.update({
@@ -345,7 +370,8 @@ export class SourcesService {
 
     if (this.storage.driver === 'local') {
       await this.storage.putFile(source.storageKey, staging, report.detectedMimeType ?? 'video/mp4');
-      await rm(staging, { force: true });
+      // Keep staging until the database update succeeds; a transient DB error
+      // after the atomic storage write must not make completion impossible.
     }
 
     const updated = await prisma.sourceVideo.update({
@@ -371,6 +397,9 @@ export class SourcesService {
         metadata: { sourceVideoId },
       },
     });
+    if (this.storage.driver === 'local') {
+      await rm(staging, { force: true }).catch(() => this.logger.warn('Could not remove completed upload staging file'));
+    }
     return this.toDto(updated);
   }
 

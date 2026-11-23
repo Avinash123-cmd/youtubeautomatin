@@ -10,6 +10,7 @@ public API never exposes this service).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
@@ -17,11 +18,12 @@ import shutil
 import threading
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 from services.media_paths import media_path
+from services.work_limits import WorkLimiter, limit_from_env
 
 from .config import ConfigurationError, Settings, load_settings
 from .gemini import GeminiError, SchemaValidationError
@@ -34,6 +36,8 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "info").upper(), format='{
 logger = logging.getLogger("ai-engine")
 
 app = FastAPI(title="ClipForge AI Engine", version="1.0.0")
+# One expensive job by default; this ceiling is per Python process, not per cluster.
+_work_limiter = WorkLimiter(limit_from_env("AI_ENGINE_MAX_CONCURRENT_WORK"), "ai-work")
 
 _settings: Settings | None = None
 _settings_error: str | None = None
@@ -84,12 +88,19 @@ class AnalyzeRequest(BaseModel):
 
 
 @app.get("/live")
-def live() -> dict:
+async def live() -> dict:
+    # Never compete with long-running synchronous requests for a worker thread.
     return {"status": "ok", "service": "clipforge-ai-engine"}
 
 
 @app.get("/health")
-def health():
+async def health():
+    # FastAPI's synchronous routes already run in AnyIO's thread pool. A separate
+    # asyncio executor keeps readiness available if that pool is fully occupied.
+    return await asyncio.to_thread(_health_status)
+
+
+def _health_status():
     try:
         cfg = settings()
     except HTTPException:
@@ -123,7 +134,11 @@ class CaptionsRequest(BaseModel):
 
 
 @app.post("/captions", dependencies=[Depends(require_api_key)])
-def captions_endpoint(request: CaptionsRequest) -> dict:
+async def captions_endpoint(request: CaptionsRequest, http_request: Request) -> dict:
+    return await _work_limiter.run(http_request, _captions_work, request)
+
+
+def _captions_work(request: CaptionsRequest) -> dict:
     cfg = settings()
     client = GeminiClient(cfg) if cfg.provider == "gemini" else None
     results = []
@@ -147,7 +162,11 @@ def captions_endpoint(request: CaptionsRequest) -> dict:
 
 
 @app.post("/transcribe", dependencies=[Depends(require_api_key)])
-def transcribe_endpoint(request: TranscribeRequest) -> dict:
+async def transcribe_endpoint(request: TranscribeRequest, http_request: Request) -> dict:
+    return await _work_limiter.run(http_request, _transcribe_work, request)
+
+
+def _transcribe_work(request: TranscribeRequest) -> dict:
     cfg = settings()
     source = request.video_path or request.audio_path
     if not source:
@@ -166,7 +185,11 @@ def transcribe_endpoint(request: TranscribeRequest) -> dict:
 
 
 @app.post("/analyze", dependencies=[Depends(require_api_key)])
-def analyze_endpoint(request: AnalyzeRequest) -> dict:
+async def analyze_endpoint(request: AnalyzeRequest, http_request: Request) -> dict:
+    return await _work_limiter.run(http_request, _analyze_work, request)
+
+
+def _analyze_work(request: AnalyzeRequest) -> dict:
     cfg = settings()
     payload = request.model_dump()
     payload["video_path"] = media_path(request.video_path, cfg.work_dir)

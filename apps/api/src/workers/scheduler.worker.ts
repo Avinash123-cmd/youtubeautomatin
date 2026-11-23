@@ -19,6 +19,8 @@ import { RedisService } from '../common/services/redis.service';
 import { SystemService } from '../system/system.service';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { scanById } from '../common/services/scan-by-id';
+import { SingleFlight } from '../common/services/single-flight';
 import { createRuntime, wireShutdown } from './base';
 
 const runtime = createRuntime('scheduler', 1);
@@ -37,11 +39,13 @@ async function refreshInstagramTokens(): Promise<void> {
     graphVersion: env.META_GRAPH_API_VERSION,
   });
   const soon = new Date(Date.now() + 7 * 24 * 3600 * 1000);
-  const accounts = await prisma.connectedAccount.findMany({
-    where: { platform: 'INSTAGRAM', status: 'CONNECTED', credential: { expiresAt: { lt: soon } } },
+  const accounts = scanById((after, take) => prisma.connectedAccount.findMany({
+    where: { platform: 'INSTAGRAM', status: 'CONNECTED', credential: { expiresAt: { lt: soon } }, ...(after ? { id: { gt: after } } : {}) },
     include: { credential: true },
-  });
-  for (const account of accounts) {
+    orderBy: { id: 'asc' },
+    take,
+  }));
+  for await (const account of accounts) {
     if (!account.credential) continue;
     try {
       const current = decryptSecret(account.credential.accessTokenEnc);
@@ -101,9 +105,17 @@ async function healthSnapshot(): Promise<void> {
   await prisma.systemHealthEvent.deleteMany({ where: { observedAt: { lt: new Date(Date.now() - 30 * 24 * 3600 * 1000) } } });
 }
 
+function activeWorkspaces() {
+  return scanById((after, take) => prisma.workspace.findMany({
+    where: { deletedAt: null, ...(after ? { id: { gt: after } } : {}) },
+    select: { id: true, timezone: true },
+    orderBy: { id: 'asc' },
+    take,
+  }));
+}
+
 async function applyRetention(): Promise<void> {
-  const workspaces = await prisma.workspace.findMany({ where: { deletedAt: null }, select: { id: true } });
-  for (const workspace of workspaces) {
+  for await (const workspace of activeWorkspaces()) {
     const resolved = await new ConfigurationService(workspace.id).load();
     const sourceDays = resolved.values.get(CONFIG_KEYS.RETENTION_SOURCE_DAYS) as number | undefined;
     const assetDays = resolved.values.get(CONFIG_KEYS.RETENTION_ASSET_DAYS) as number | undefined;
@@ -215,8 +227,7 @@ function localDateIn(timezone: string | null, date = new Date()): { date: string
  * local date, so a restart inside the summary hour cannot send it twice.
  */
 async function dailySummaries(): Promise<void> {
-  const workspaces = await prisma.workspace.findMany({ where: { deletedAt: null }, select: { id: true, timezone: true } });
-  for (const workspace of workspaces) {
+  for await (const workspace of activeWorkspaces()) {
     const settings = await notifications.settings(workspace.id);
     if (!settings.enabled || !settings.categories.includes('DAILY_SUMMARY')) continue;
     const { date, hour } = localDateIn(workspace.timezone);
@@ -246,27 +257,38 @@ async function dailySummaries(): Promise<void> {
 }
 
 let tick = 0;
+const maintenance = new SingleFlight();
 async function loop(): Promise<void> {
-  await queues.relayOnce(50).catch((error: Error) => runtime.logger.error(`outbox relay: ${error.message}`));
-  tick += 1;
-  if (tick % 60 === 0) {
-    await healthSnapshot().catch((error: Error) => runtime.logger.error(`health snapshot: ${error.message}`));
+  // Capture the tick before any awaits: other timer callbacks can run concurrently.
+  // Each task is single-flight within this process, but a slow scan must not
+  // block the outbox relay or allow successive scans to accumulate in memory.
+  const currentTick = ++tick;
+  const tasks: Array<Promise<boolean>> = [
+    maintenance.run('relay', () => queues.relayOnce(50).catch((error: Error) => runtime.logger.error(`outbox relay: ${error.message}`))),
+  ];
+  if (currentTick % 60 === 0) {
+    tasks.push(maintenance.run('health', () => healthSnapshot().catch((error: Error) => runtime.logger.error(`health snapshot: ${error.message}`))));
   }
-  if (tick % 300 === 0) {
-    await refreshInstagramTokens().catch((error: Error) => runtime.logger.error(`token refresh: ${error.message}`));
+  if (currentTick % 300 === 0) {
+    tasks.push(maintenance.run('tokens', () => refreshInstagramTokens().catch((error: Error) => runtime.logger.error(`token refresh: ${error.message}`))));
   }
-  if (tick % 900 === 0) {
-    await applyRetention().catch((error: Error) => runtime.logger.error(`retention: ${error.message}`));
-    await cleanWorkDirs().catch((error: Error) => runtime.logger.error(`cleanup: ${error.message}`));
+  if (currentTick % 900 === 0) {
+    tasks.push(maintenance.run('retention', async () => {
+      await applyRetention().catch((error: Error) => runtime.logger.error(`retention: ${error.message}`));
+      await cleanWorkDirs().catch((error: Error) => runtime.logger.error(`cleanup: ${error.message}`));
+    }));
   }
-  if (tick % 30 === 0) {
-    await watchScheduledPublishing().catch((error: Error) => runtime.logger.error(`schedule watch: ${error.message}`));
+  if (currentTick % 30 === 0) {
+    tasks.push(maintenance.run('publishing', () => watchScheduledPublishing().catch((error: Error) => runtime.logger.error(`schedule watch: ${error.message}`))));
   }
-  if (tick % 600 === 0) {
-    await dailySummaries().catch((error: Error) => runtime.logger.error(`daily summary: ${error.message}`));
-    // Recover notifications a crash left half-sent. The scheduler is the process that always runs.
-    await notifications.retryPending().catch((error: Error) => runtime.logger.error(`notification retry: ${error.message}`));
+  if (currentTick % 600 === 0) {
+    tasks.push(maintenance.run('summaries', async () => {
+      await dailySummaries().catch((error: Error) => runtime.logger.error(`daily summary: ${error.message}`));
+      // Recover notifications a crash left half-sent. The scheduler is the process that always runs.
+      await notifications.retryPending().catch((error: Error) => runtime.logger.error(`notification retry: ${error.message}`));
+    }));
   }
+  await Promise.all(tasks);
 }
 
 async function main() {

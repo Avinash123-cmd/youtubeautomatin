@@ -20,7 +20,8 @@ export default function AccountsPage() {
 function AccountsContent() {
   const params = useSearchParams();
   const client = useQueryClient();
-  const accounts = useAccounts();
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const accounts = useAccounts(cursors[cursors.length - 1]);
   const verify = useVerifyAccount();
   const disconnect = useDisconnectAccount();
   // OAuth connect/disconnect/verify are OWNER/ADMIN only on the API.
@@ -145,7 +146,9 @@ function AccountsContent() {
         ) : accounts.error ? (
           <div className="p-5"><ErrorState message={accounts.error.message} onRetry={() => void accounts.refetch()} /></div>
         ) : accounts.data!.accounts.length === 0 ? (
-          <EmptyState title="No accounts connected" description="Connect a YouTube channel or Instagram professional account above. Publishing stays disabled until you enable it per account." />
+          cursors.length > 1
+            ? <EmptyState title="No accounts on this page" description="Use Previous to return to earlier accounts." />
+            : <EmptyState title="No accounts connected" description="Connect a YouTube channel or Instagram professional account above. Publishing stays disabled until you enable it per account." />
         ) : (
           <ul className="divide-y divide-line">
             {accounts.data!.accounts.map((account) => (
@@ -182,6 +185,16 @@ function AccountsContent() {
             ))}
           </ul>
         )}
+        {(cursors.length > 1 || accounts.data?.nextCursor) ? (
+          <div className="flex items-center gap-3 border-t border-line px-5 py-4 text-sm">
+            <button type="button" className="btn-secondary" disabled={cursors.length <= 1 || accounts.isFetching} onClick={() => setCursors((current) => current.slice(0, -1))}>Previous</button>
+            <span>Page {cursors.length}</span>
+            <button type="button" className="btn-secondary" disabled={!accounts.data?.nextCursor || accounts.isFetching} onClick={() => {
+              const next = accounts.data?.nextCursor;
+              if (next) setCursors((current) => [...current, next]);
+            }}>Next</button>
+          </div>
+        ) : null}
       </Card>
     </div>
   );

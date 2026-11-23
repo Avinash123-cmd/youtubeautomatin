@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { Readable } from 'node:stream';
 import { beforeEach, expect, it, vi } from 'vitest';
 const db = vi.hoisted(() => ({ $connect: vi.fn(), $queryRaw: vi.fn(), $disconnect: vi.fn() }));
-const redis = vi.hoisted(() => ({ ping: vi.fn(), on: vi.fn(), quit: vi.fn(), disconnect: vi.fn() }));
+const redis = vi.hoisted(() => ({ status: 'ready', ping: vi.fn(), on: vi.fn(), quit: vi.fn(), disconnect: vi.fn() }));
 vi.mock('@clipforge/database', () => ({ prisma: db }));
 vi.mock('ioredis', () => ({ default: vi.fn(function () { return redis; }) }));
 vi.mock('../../apps/api/src/common/env', () => ({ env: { HEALTHCHECK_TIMEOUT_MS: 15, STORAGE_DRIVER: 'local', REDIS_URL: 'redis://unused', STORAGE_LOCAL_ROOT: '/unused' } }));
@@ -20,8 +20,8 @@ it('bounds database startup and never propagates a credential-bearing driver exc
   db.$connect.mockImplementation(() => new Promise(() => {}));
   await expect(new PrismaService().onModuleInit()).rejects.toThrow('timed out');
 });
-it('requires both Redis connections to answer PONG, not just construct successfully', async () => {
-  const service = new RedisService(); await service.onModuleInit(); expect(redis.ping).toHaveBeenCalledTimes(2);
+it('requires general, subscriber and rate-limit Redis connections to answer PONG', async () => {
+  const service = new RedisService(); await service.onModuleInit(); expect(redis.ping).toHaveBeenCalledTimes(3);
   redis.ping.mockResolvedValue('unexpected'); await expect(service.onModuleInit()).rejects.toThrow('Redis startup check failed');
 });
 it('bounds Redis shutdown even when QUIT never resolves', async () => {

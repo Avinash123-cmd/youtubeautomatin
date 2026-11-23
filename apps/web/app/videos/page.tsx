@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { processingRequest } from '@/lib/processing-request';
+import { pollingInterval } from '@/lib/polling';
 import { useConfiguration } from '@/lib/hooks';
 import { formatClock } from '@/lib/youtube';
 import { Card, EmptyState, ErrorState, Field, Icon, PageHeader, Skeleton, StatusBadge } from '@/components/ui';
@@ -47,7 +48,7 @@ export default function VideosPage() {
       if (status) query.set('status', status);
       return api<{ items: Source[]; total: number; page: number; pageSize: number }>(`/api/sources?${query}`, { signal });
     },
-    refetchInterval: 20_000,
+    refetchInterval: query => pollingInterval(30_000, query),
   });
 
   const process = useMutation({

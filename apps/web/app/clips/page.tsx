@@ -278,13 +278,7 @@ function PublishPanel({ clipId, platforms }: { clipId: string; platforms: boolea
   // Only accounts that are connected *and* explicitly enabled for publishing can receive a post;
   // the API enforces the same rule. Showing every platform regardless produced a 400 after the
   // user had already chosen one.
-  const choices = Array.from(
-    new Set(
-      (accounts.data?.accounts ?? [])
-        .filter((account) => account.status === 'CONNECTED' && account.publishingEnabled)
-        .map((account) => account.platform),
-    ),
-  );
+  const choices = accounts.data?.eligiblePublishingPlatforms ?? [];
 
   return (
     <div className="space-y-2 border-t border-line pt-3">

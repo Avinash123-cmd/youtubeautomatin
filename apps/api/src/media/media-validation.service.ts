@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import type { ProbeResult } from '@clipforge/shared-types';
@@ -50,21 +50,43 @@ export class MediaValidationService {
     }
   }
 
-  /** Calls the video-processor's real ffprobe wrapper. */
+  /** Calls the video-processor's ffprobe wrapper, distinguishing invalid media from service failures. */
   async probe(filePath: string, apiKey = env.VIDEO_PROCESSOR_API_KEY): Promise<ProbeResult> {
-    const response = await fetch(`${env.VIDEO_PROCESSOR_URL}/probe`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
-      body: JSON.stringify({ path: filePath }),
+    const unavailable = () => new ServiceUnavailableException({
+      code: 'VIDEO_PROCESSOR_UNAVAILABLE',
+      message: 'Media inspection is temporarily unavailable; please retry.',
     });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new BadRequestException({
-        code: 'MEDIA_VALIDATION_FAILED',
-        message: `ffprobe could not read the file: ${text.slice(0, 400)}`,
+    try {
+      const response = await fetch(`${env.VIDEO_PROCESSOR_URL}/probe`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
+        body: JSON.stringify({ path: filePath }),
+        // Includes time spent waiting for a probe slot as well as ffprobe itself.
+        signal: AbortSignal.timeout(150_000),
       });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { detail?: { code?: string } } | null;
+        // Only an explicit ffprobe rejection proves that the media is invalid.
+        // Timeouts, authentication, a missing shared mount and 5xx responses are operational errors.
+        if (response.status === 422 && body?.detail?.code === 'MEDIA_VALIDATION_FAILED') {
+          throw new BadRequestException({ code: 'MEDIA_VALIDATION_FAILED', message: 'ffprobe could not read the file' });
+        }
+        throw unavailable();
+      }
+      const data = await response.json() as Record<string, unknown>;
+      if (!data || typeof data !== 'object' || Array.isArray(data) ||
+          !['duration_seconds', 'width', 'height', 'frame_rate', 'rotation'].every(key => typeof data[key] === 'number' && Number.isFinite(data[key])) ||
+          !(data.video_codec === null || typeof data.video_codec === 'string') ||
+          !(data.audio_codec === null || typeof data.audio_codec === 'string') ||
+          typeof data.container !== 'string') {
+        throw unavailable();
+      }
+      return data as unknown as ProbeResult;
+    } catch (error) {
+      if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) throw error;
+      // Driver and JSON errors can contain internal paths or connection details.
+      throw unavailable();
     }
-    return (await response.json()) as ProbeResult;
   }
 
   async validate(input: {
@@ -96,7 +118,10 @@ export class MediaValidationService {
       try {
         probe = await this.probe(input.filePath);
       } catch (error) {
-        issues.push((error as Error).message);
+        // A failed dependency is not evidence that the user's media is invalid.
+        // Preserve the source for retry instead of recording a permanent rejection.
+        if (!(error instanceof BadRequestException)) throw error;
+        issues.push(error.message);
       }
     }
 

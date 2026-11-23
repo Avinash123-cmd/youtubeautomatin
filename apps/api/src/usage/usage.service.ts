@@ -64,40 +64,29 @@ export class UsageService {
   /** Aggregate spend for a workspace over a window. Read-only; no rows are created here. */
   async summary(workspaceId: string, query: { from?: string; to?: string }): Promise<UsageSummary> {
     const window = resolveWindow(query);
-    const records = await prisma.usageRecord.findMany({
-      where: { workspaceId, recordedAt: { gte: window.from, lte: window.to } },
-      select: { kind: true, quantity: true, costUsd: true },
-    });
-
-    const byKind = new Map<string, KindSummary>();
-    for (const record of records) {
-      const entry =
-        byKind.get(record.kind) ??
-        ({
-          kind: record.kind,
-          label: KIND_LABELS[record.kind] ?? record.kind,
-          unit: UNIT_BY_KIND[record.kind] ?? 'units',
-          quantity: 0,
-          records: 0,
-          costUsd: 0,
-          unpricedRecords: 0,
-        } satisfies KindSummary);
-      entry.quantity = round(entry.quantity + record.quantity);
-      entry.records += 1;
-      // A null cost means "we did not price this", which is different from costing zero.
-      if (record.costUsd === null || record.costUsd === undefined) entry.unpricedRecords += 1;
-      else entry.costUsd = round(entry.costUsd + record.costUsd);
-      byKind.set(record.kind, entry);
-    }
-
+    // Aggregate in PostgreSQL rather than materialising every ledger row in API memory.
+    const [groups, bytesStoredNow] = await Promise.all([
+      prisma.usageRecord.groupBy({
+        by: ['kind'],
+        where: { workspaceId, recordedAt: { gte: window.from, lte: window.to } },
+        _sum: { quantity: true, costUsd: true },
+        _count: { _all: true, costUsd: true },
+      }),
+      this.bytesCurrentlyStored(workspaceId),
+    ]);
+    const byKind = new Map<string, KindSummary>(groups.map((group) => [group.kind, {
+      kind: group.kind,
+      label: KIND_LABELS[group.kind] ?? group.kind,
+      unit: UNIT_BY_KIND[group.kind] ?? 'units',
+      quantity: round(group._sum.quantity ?? 0),
+      records: group._count._all,
+      costUsd: round(group._sum.costUsd ?? 0),
+      // A null cost means "we did not price this", not a zero-cost record.
+      unpricedRecords: group._count._all - group._count.costUsd,
+    }]));
     const byKindSorted = [...byKind.values()].sort((a, b) => b.costUsd - a.costUsd || a.kind.localeCompare(b.kind));
     const prices = priceList();
-
-    const storageAggregate = await prisma.usageRecord.aggregate({
-      where: { workspaceId, kind: 'storage_bytes', recordedAt: { gte: window.from, lte: window.to } },
-      _sum: { quantity: true },
-    });
-    const bytesWritten = storageAggregate._sum.quantity ?? 0;
+    const bytesWritten = byKind.get('storage_bytes')?.quantity ?? 0;
 
     return {
       workspaceId,
@@ -108,7 +97,7 @@ export class UsageService {
       },
       totals: {
         costUsd: round(byKindSorted.reduce((sum, entry) => sum + entry.costUsd, 0)),
-        records: records.length,
+        records: byKindSorted.reduce((sum, entry) => sum + entry.records, 0),
         unpricedRecords: byKindSorted.reduce((sum, entry) => sum + entry.unpricedRecords, 0),
         tokens: round(
           (byKind.get('gemini_tokens')?.quantity ?? 0) + (byKind.get('gemini_vision_tokens')?.quantity ?? 0),
@@ -120,8 +109,8 @@ export class UsageService {
       },
       byKind: byKindSorted,
       storage: {
-        bytesStoredNow: await this.bytesCurrentlyStored(workspaceId),
-        monthlyCostUsd: round(((await this.bytesCurrentlyStored(workspaceId)) / 1024 ** 3) * prices.storagePerGbMonth),
+        bytesStoredNow,
+        monthlyCostUsd: round((bytesStoredNow / 1024 ** 3) * prices.storagePerGbMonth),
         pricePerGbMonth: prices.storagePerGbMonth,
       },
       prices,
@@ -132,18 +121,27 @@ export class UsageService {
   /** Daily spend series, useful for spotting a runaway job or a pricing change. */
   async daily(workspaceId: string, query: { from?: string; to?: string }) {
     const window = resolveWindow(query);
-    const records = await prisma.usageRecord.findMany({
-      where: { workspaceId, recordedAt: { gte: window.from, lte: window.to }, costUsd: { not: null } },
-      select: { kind: true, costUsd: true, recordedAt: true },
-    });
+    // recordedAt is a UTC TIMESTAMP without time zone in the Prisma schema.
+    // Convert explicit UTC bounds to the same type independently of the database
+    // session timezone; grouping by its date matches the old ISO buckets.
+    const groups = await prisma.$queryRaw<Array<{ date: string; kind: string; costUsd: number; records: number }>>`
+      SELECT to_char("recordedAt", 'YYYY-MM-DD') AS date, "kind",
+             SUM("costUsd")::double precision AS "costUsd", COUNT(*)::double precision AS records
+      FROM "UsageRecord"
+      WHERE "workspaceId" = ${workspaceId}::uuid
+        AND "recordedAt" >= (${window.from.toISOString()}::timestamptz AT TIME ZONE 'UTC')
+        AND "recordedAt" <= (${window.to.toISOString()}::timestamptz AT TIME ZONE 'UTC')
+        AND "costUsd" IS NOT NULL
+      GROUP BY 1, "kind"
+      ORDER BY 1, "kind"
+    `;
     const buckets = new Map<string, { date: string; costUsd: number; records: number; byKind: Record<string, number> }>();
-    for (const record of records) {
-      const date = record.recordedAt.toISOString().slice(0, 10);
-      const bucket = buckets.get(date) ?? { date, costUsd: 0, records: 0, byKind: {} };
-      bucket.costUsd = round(bucket.costUsd + (record.costUsd ?? 0));
-      bucket.records += 1;
-      bucket.byKind[record.kind] = round((bucket.byKind[record.kind] ?? 0) + (record.costUsd ?? 0));
-      buckets.set(date, bucket);
+    for (const group of groups) {
+      const bucket = buckets.get(group.date) ?? { date: group.date, costUsd: 0, records: 0, byKind: {} };
+      bucket.costUsd = round(bucket.costUsd + group.costUsd);
+      bucket.records += group.records;
+      bucket.byKind[group.kind] = round(group.costUsd);
+      buckets.set(group.date, bucket);
     }
     return {
       workspaceId,
@@ -192,23 +190,22 @@ export class UsageService {
   }
 
   /**
-   * Bytes currently held: the latest storage write per source video, summed. Storage records are
-   * written on upload, so the newest record per source is the file that exists now; superseded and
-   * deleted files must not inflate the number.
+   * Estimate bytes from the latest storage write per source, plus unattributed legacy writes.
+   * This is a ledger estimate; it does not independently check whether objects were later deleted.
    */
   private async bytesCurrentlyStored(workspaceId: string): Promise<number> {
-    const rows = await prisma.usageRecord.findMany({
-      where: { workspaceId, kind: 'storage_bytes' },
-      select: { quantity: true, metadata: true, recordedAt: true },
-      orderBy: { recordedAt: 'desc' },
-    });
-    const latestPerSource = new Map<string, number>();
-    for (const row of rows) {
-      const metadata = (row.metadata ?? {}) as { sourceVideoId?: string };
-      const key = metadata.sourceVideoId ?? `unattributed-${latestPerSource.size}`;
-      if (!latestPerSource.has(key)) latestPerSource.set(key, row.quantity);
-    }
-    return round([...latestPerSource.values()].reduce((sum, value) => sum + value, 0));
+    // DISTINCT ON retains the newest write per attributed source. Unattributed
+    // legacy rows each remain distinct, as in the previous in-memory algorithm.
+    const [result] = await prisma.$queryRaw<Array<{ bytes: number }>>`
+      SELECT COALESCE(SUM(latest."quantity"), 0)::double precision AS bytes
+      FROM (
+        SELECT DISTINCT ON (COALESCE("metadata"->>'sourceVideoId', 'unattributed:' || "id"::text)) "quantity"
+        FROM "UsageRecord"
+        WHERE "workspaceId" = ${workspaceId}::uuid AND "kind" = 'storage_bytes'
+        ORDER BY COALESCE("metadata"->>'sourceVideoId', 'unattributed:' || "id"::text), "recordedAt" DESC, "id" DESC
+      ) AS latest
+    `;
+    return round(result?.bytes ?? 0);
   }
 }
 

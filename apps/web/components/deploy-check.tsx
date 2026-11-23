@@ -1,6 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import { pollingInterval } from '@/lib/polling';
 import { Card, CardHeader, StatusBadge } from './ui';
 
 interface DeployProbe {
@@ -23,7 +24,7 @@ export function DeployCheck() {
       const response = await fetch('/healthz', { cache: 'no-store' });
       return (await response.json()) as DeployProbe;
     },
-    refetchInterval: 30_000,
+    refetchInterval: query => pollingInterval(30_000, query),
     retry: false,
   });
 

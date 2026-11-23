@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RIGHTS_DECLARATIONS as RIGHTS } from '@/lib/source-rights';
 import { processingConfiguration } from '@/lib/processing-request';
-import { api, uploadSource, ApiError } from '@/lib/api';
+import { api, completeSourceUpload, uploadSource, ApiError, UploadValidationPendingError, type UploadCompletion, type UploadProgress } from '@/lib/api';
 import { useAccounts, useConfiguration } from '@/lib/hooks';
 import { formatClock, parseYouTubeId, youtubeThumbnail, type YouTubeImportStatus, type YouTubeInspectResponse } from '@/lib/youtube';
 import { Card, CardHeader, Chip, ErrorState, Field, Icon, PageHeader, Spinner, Steps, Toggle } from '@/components/ui';
@@ -34,6 +34,9 @@ export default function CreatePage() {
   const [debouncedUrl, setDebouncedUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [uploadPercent, setUploadPercent] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState<UploadProgress['phase'] | null>(null);
+  // Keep completion data only in this page, and only for the selected file.
+  const [pendingUpload, setPendingUpload] = useState<{ file: File; completion: UploadCompletion } | null>(null);
   const [sourceUrl, setSourceUrl] = useState('');
   const [autoPublish, setAutoPublish] = useState(false);
   const [publishPlatforms, setPublishPlatforms] = useState<Array<'YOUTUBE' | 'INSTAGRAM'>>([]);
@@ -71,14 +74,8 @@ export default function CreatePage() {
 
   // Publishing is only offered for accounts that are connected *and* explicitly enabled for
   // automatic publishing; the API enforces the same rule and fails closed.
-  const eligiblePlatforms = useMemo(
-    () =>
-      (accounts.data?.accounts ?? [])
-        .filter((account) => account.status === 'CONNECTED' && account.publishingEnabled)
-        .map((account) => account.platform)
-        .filter((platform, index, all) => all.indexOf(platform) === index),
-    [accounts.data],
-  );
+  // The server summary covers every account page, so later pages cannot hide an eligible platform.
+  const eligiblePlatforms = useMemo(() => accounts.data?.eligiblePublishingPlatforms ?? [], [accounts.data]);
 
   useEffect(() => {
     if (!autoPublish) return;
@@ -126,22 +123,39 @@ export default function CreatePage() {
   });
 
   const uploadJob = useMutation({
-    mutationFn: async () => {
-      if (!file) throw new Error('Select a video file first');
-      const source = await uploadSource(file, {
-        rightsStatement,
-        onProgress: (progress) => setUploadPercent(progress.percent),
-      });
+    mutationFn: async (selectedFile: File) => {
+      let source;
+      if (pendingUpload?.file === selectedFile) {
+        setUploadPhase('validating');
+        source = await completeSourceUpload(pendingUpload.completion, rightsStatement);
+      } else {
+        source = await uploadSource(selectedFile, {
+          rightsStatement,
+          onProgress: (progress) => {
+            setUploadPercent(progress.percent);
+            setUploadPhase(progress.phase);
+          },
+        });
+      }
+      setPendingUpload(null);
       return createJob(source.id);
     },
     onSuccess: (job) => {
       setUploadPercent(0);
+      setUploadPhase(null);
       void client.invalidateQueries({ queryKey: ['jobs'] });
       router.push(`/jobs/${job.id}`);
     },
-    onError: (mutationError: Error) => {
+    onError: (mutationError: Error, selectedFile) => {
       setUploadPercent(0);
-      setError(describeFailure(mutationError));
+      setUploadPhase(null);
+      if (mutationError instanceof UploadValidationPendingError) {
+        setPendingUpload({ file: selectedFile, completion: mutationError.completion });
+        setError(`${describeFailure(mutationError)} The file is already uploaded; retry validation on this page without uploading it again.`);
+      } else {
+        setPendingUpload(null);
+        setError(describeFailure(mutationError));
+      }
     },
   });
 
@@ -172,7 +186,7 @@ export default function CreatePage() {
   const submit = () => {
     setError(null);
     if (mode === 'youtube') youtubeJob.mutate();
-    else if (mode === 'upload') uploadJob.mutate();
+    else if (mode === 'upload' && file) uploadJob.mutate(file);
     else urlJob.mutate();
   };
 
@@ -341,8 +355,12 @@ export default function CreatePage() {
                     type="file"
                     accept="video/*"
                     className="sr-only"
+                    disabled={pending}
                     onChange={(event) => {
                       setFile(event.target.files?.[0] ?? null);
+                      setPendingUpload(null);
+                      setUploadPercent(0);
+                      setUploadPhase(null);
                       setError(null);
                     }}
                   />
@@ -354,6 +372,8 @@ export default function CreatePage() {
                     </div>
                     <p className="mt-1 text-xs text-ink-soft">Uploading… {uploadPercent}%</p>
                   </div>
+                ) : uploadJob.isPending && uploadPhase === 'validating' ? (
+                  <p className="text-xs text-ink-soft">Inspecting the uploaded video…</p>
                 ) : null}
               </div>
             ) : null}
@@ -495,9 +515,11 @@ export default function CreatePage() {
                 {pending ? <Spinner /> : <Icon name="sparkles" className="h-4 w-4" />}
                 {pending
                   ? mode === 'upload'
-                    ? 'Uploading…'
+                    ? uploadPhase === 'validating' ? 'Inspecting…' : 'Uploading…'
                     : 'Starting project…'
-                  : 'Generate clips'}
+                  : mode === 'upload' && pendingUpload?.file === file
+                    ? 'Retry validation'
+                    : 'Generate clips'}
               </button>
               <p className="text-center text-[11px] leading-relaxed text-ink-faint">
                 {autoPublish && publishPlatforms.length > 0

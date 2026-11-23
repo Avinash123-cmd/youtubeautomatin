@@ -1,57 +1,54 @@
 import { BadRequestException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
+import { open, rename, rm } from 'node:fs/promises';
+import { request as httpRequest, type IncomingMessage, type RequestOptions } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import * as ipaddr from 'ipaddr.js';
 
 /**
- * SSRF protection for the "import from direct URL" source path.
- *
- * Rules enforced before any outbound request:
- *  - scheme must be http(s) (https in production)
- *  - hostname is resolved and EVERY resolved address is checked against
- *    private/loopback/link-local/CGNAT/metadata ranges
- *  - literal IP hosts are checked directly
- *  - redirects are not followed automatically (see fetchWithLimits)
- *  - downloads are size-capped streaming, with an overall deadline
+ * Direct media imports may only connect to public addresses. DNS is resolved and
+ * checked for every redirect, and the checked address is pinned to the actual
+ * HTTP connection. The original URL is kept for the Host header, TLS SNI and
+ * certificate validation.
  */
-
 export interface UrlPolicyResult {
   url: URL;
   resolvedIps: string[];
 }
 
-const BLOCKED_V4 = [
-  [/^0\./, 'this-network'],
-  [/^10\./, 'private'],
-  [/^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./, 'carrier-grade NAT'],
-  [/^127\./, 'loopback'],
-  [/^169\.254\./, 'link-local (includes cloud metadata 169.254.169.254)'],
-  [/^172\.(1[6-9]|2\d|3[0-1])\./, 'private'],
-  [/^192\.0\.0\./, 'IETF protocol assignments'],
-  [/^192\.168\./, 'private'],
-  [/^198\.(1[89])\./, 'benchmarking'],
-  [/^2[2-5]\d\./, 'multicast/reserved'],
-] as const;
+class DownloadLimitError extends Error {}
 
-function isBlockedIp(ip: string): string | null {
-  const version = isIP(ip);
-  if (version === 4) {
-    for (const [pattern, label] of BLOCKED_V4) if (pattern.test(ip)) return label;
-    return null;
-  }
-  if (version === 6) {
-    const normalized = ip.toLowerCase();
-    if (normalized === '::1') return 'loopback';
-    if (normalized === '::') return 'unspecified';
-    if (normalized.startsWith('fe80')) return 'link-local';
-    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return 'unique local';
-    const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isBlockedIp(mapped[1]!);
-    return null;
-  }
+function blockedIpReason(ip: string): string | null {
+  // Do not interpret malformed DNS answers as hostnames or allow alternate IP
+  // spellings to bypass the range checks. URL has already canonicalised literals.
+  if (!isIP(ip)) return 'invalid address';
+  const address = ipaddr.parse(ip);
+  const range = address.range();
+  if (range !== 'unicast') return range;
+  // Reject IPv4-compatible/translated and other non-global IPv6 ranges as well
+  // as IPv4-mapped addresses (including their hexadecimal URL spelling).
+  if (address instanceof ipaddr.IPv6 && !address.match(ipaddr.IPv6.parse('2000::'), 3)) return 'non-global IPv6';
   return null;
 }
 
-export async function assertSafeOutboundUrl(rawUrl: string, options: { requireHttps: boolean }): Promise<UrlPolicyResult> {
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+export async function assertSafeOutboundUrl(
+  rawUrl: string,
+  options: { requireHttps: boolean; signal?: AbortSignal },
+): Promise<UrlPolicyResult> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -67,92 +64,153 @@ export async function assertSafeOutboundUrl(rawUrl: string, options: { requireHt
   if (url.username || url.password) {
     throw new BadRequestException({ code: 'SSRF_BLOCKED', message: 'Credentials in URLs are not allowed' });
   }
-  const hostname = url.hostname.toLowerCase();
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.internal') || hostname.endsWith('.local')) {
+
+  // WHATWG URL retains brackets around IPv6 literals; DNS and isIP do not.
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const hostnameWithoutDot = hostname.replace(/\.$/, '');
+  if (hostnameWithoutDot === 'localhost' || hostnameWithoutDot.endsWith('.localhost') ||
+      hostnameWithoutDot.endsWith('.internal') || hostnameWithoutDot.endsWith('.local')) {
     throw new BadRequestException({ code: 'SSRF_BLOCKED', message: `Hostname ${hostname} is not allowed` });
   }
 
-  const literalBlock = isBlockedIp(hostname);
-  if (literalBlock) {
-    throw new BadRequestException({ code: 'SSRF_BLOCKED', message: `Address ${hostname} is blocked (${literalBlock})` });
-  }
-
-  if (!isIP(hostname)) {
-    const addresses = await lookup(hostname, { all: true, verbatim: true }).catch(() => {
+  let addresses: string[];
+  if (isIP(hostname)) {
+    addresses = [hostname];
+  } else {
+    try {
+      const records = await abortable(lookup(hostname, { all: true, verbatim: true }), options.signal);
+      addresses = records.map((record) => record.address);
+    } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason;
       throw new BadRequestException({ code: 'VALIDATION_FAILED', message: `Cannot resolve host ${hostname}` });
-    });
-    for (const address of addresses) {
-      const blocked = isBlockedIp(address.address);
-      if (blocked) {
-        throw new BadRequestException({
-          code: 'SSRF_BLOCKED',
-          message: `${hostname} resolves to ${address.address}, which is blocked (${blocked})`,
-        });
-      }
     }
-    return { url, resolvedIps: addresses.map((a) => a.address) };
   }
-  return { url, resolvedIps: [hostname] };
+  if (addresses.length === 0) {
+    throw new BadRequestException({ code: 'VALIDATION_FAILED', message: `Cannot resolve host ${hostname}` });
+  }
+  for (const address of addresses) {
+    const blocked = blockedIpReason(address);
+    if (blocked) {
+      throw new BadRequestException({ code: 'SSRF_BLOCKED', message: `${hostname} resolves to a blocked address (${blocked})` });
+    }
+  }
+  return { url, resolvedIps: addresses };
+}
+
+/** Make exactly one connection using the validated address, without another DNS lookup. */
+function requestPinned(url: URL, address: string, signal: AbortSignal): Promise<IncomingMessage> {
+  const family = isIP(address);
+  if (family !== 4 && family !== 6) throw new Error('Invalid validated address');
+  const options: RequestOptions & { autoSelectFamily: boolean } = {
+    method: 'GET',
+    signal,
+    // Do not reuse an existing connection whose destination was resolved elsewhere.
+    agent: false,
+    family,
+    autoSelectFamily: false,
+    headers: { 'accept-encoding': 'identity' },
+    lookup: (_hostname, _options, callback) => callback(null, address, family),
+  };
+  const request = url.protocol === 'https:' ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const outgoing = request(url, options, resolve);
+    outgoing.once('error', reject);
+    outgoing.end();
+  });
 }
 
 /**
- * Streams a remote file to disk with a hard byte cap and deadline.
- * Redirects are followed manually so each hop is re-validated.
+ * Stream to an adjacent private temporary file, then atomically publish it.
+ * One deadline covers DNS, all redirects, headers and the complete response body.
  */
 export async function downloadUrlToFile(
   rawUrl: string,
   destinationPath: string,
   options: { maxBytes: number; timeoutMs: number; maxRedirects?: number; requireHttps: boolean },
 ): Promise<{ sizeBytes: number; contentType: string | null; finalUrl: string }> {
-  const { createWriteStream } = await import('node:fs');
-  const { pipeline } = await import('node:stream/promises');
-  const { Readable } = await import('node:stream');
-
+  if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1 || !Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 ||
+      !Number.isInteger(options.maxRedirects ?? 3) || (options.maxRedirects ?? 3) < 0) {
+    throw new Error('Invalid download limits');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  const temporaryPath = `${destinationPath}.tmp-${randomUUID()}`;
+  let ownsTemporaryFile = false;
+  let response: IncomingMessage | undefined;
   let current = rawUrl;
-  let response: Response | null = null;
-  const maxRedirects = options.maxRedirects ?? 3;
-
-  for (let hop = 0; hop <= maxRedirects; hop += 1) {
-    await assertSafeOutboundUrl(current, { requireHttps: options.requireHttps });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
-    const res = await fetch(current, { redirect: 'manual', signal: controller.signal }).finally(() => clearTimeout(timer));
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get('location');
-      if (!location) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Redirect without Location header' });
-      current = new URL(location, current).toString();
-      continue;
-    }
-    response = res;
-    break;
-  }
-  if (!response) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Too many redirects' });
-  if (!response.ok || !response.body) {
-    throw new BadRequestException({ code: 'VALIDATION_FAILED', message: `Source returned HTTP ${response.status}` });
-  }
-
-  const contentType = response.headers.get('content-type');
-  const declaredLength = Number(response.headers.get('content-length') ?? '0');
-  if (declaredLength > options.maxBytes) {
-    throw new BadRequestException({
-      code: 'MEDIA_VALIDATION_FAILED',
-      message: `Remote file declares ${declaredLength} bytes, above the limit of ${options.maxBytes}`,
-    });
-  }
-
-  let written = 0;
-  const nodeStream = Readable.fromWeb(response.body as never);
-  nodeStream.on('data', (chunk: Buffer) => {
-    written += chunk.byteLength;
-    if (written > options.maxBytes) {
-      nodeStream.destroy(new Error(`Download exceeded the maximum of ${options.maxBytes} bytes`));
-    }
-  });
-
   try {
-    await pipeline(nodeStream, createWriteStream(destinationPath));
+    const maxRedirects = options.maxRedirects ?? 3;
+    for (let hop = 0; hop <= maxRedirects; hop += 1) {
+      const policy = await assertSafeOutboundUrl(current, { requireHttps: options.requireHttps, signal: controller.signal });
+      controller.signal.throwIfAborted();
+      // DNS can return both IPv6 and IPv4 even when only one family is
+      // reachable. Try each previously validated address, never re-resolve.
+      let connectionError: unknown;
+      for (const address of policy.resolvedIps) {
+        try {
+          response = await requestPinned(policy.url, address, controller.signal);
+          break;
+        } catch (error) {
+          if (controller.signal.aborted) throw controller.signal.reason;
+          connectionError = error;
+        }
+      }
+      if (!response) throw connectionError ?? new Error('No reachable validated address');
+      const status = response.statusCode ?? 0;
+      if (status >= 300 && status < 400) {
+        const location = response.headers.location;
+        response.destroy();
+        response = undefined;
+        if (!location) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Redirect without Location header' });
+        if (hop === maxRedirects) throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Too many redirects' });
+        try { current = new URL(location, policy.url).toString(); }
+        catch { throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'Malformed redirect URL' }); }
+        continue;
+      }
+      break;
+    }
+    if (!response || !response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+      throw new BadRequestException({ code: 'VALIDATION_FAILED', message: `Source returned HTTP ${response?.statusCode ?? 0}` });
+    }
+    const encoding = response.headers['content-encoding'];
+    if (encoding && encoding.toLowerCase() !== 'identity') {
+      throw new BadRequestException({ code: 'MEDIA_VALIDATION_FAILED', message: 'Compressed transfer encoding is not supported for media imports' });
+    }
+    const declaredLength = Number(response.headers['content-length'] ?? '0');
+    if (declaredLength > options.maxBytes) {
+      throw new BadRequestException({ code: 'MEDIA_VALIDATION_FAILED', message: `Remote file declares ${declaredLength} bytes, above the limit of ${options.maxBytes}` });
+    }
+    const contentType = response.headers['content-type'] ?? null;
+    let written = 0;
+    const counter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        written += chunk.length;
+        if (written > options.maxBytes) callback(new DownloadLimitError(`Download exceeded the maximum of ${options.maxBytes} bytes`));
+        else callback(null, chunk);
+      },
+    });
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    ownsTemporaryFile = true;
+    try {
+      await pipeline(response, counter, handle.createWriteStream(), { signal: controller.signal });
+    } finally {
+      // createWriteStream normally closes the handle; close also covers early failure.
+      await handle.close().catch(() => undefined);
+    }
+    controller.signal.throwIfAborted();
+    await rename(temporaryPath, destinationPath);
+    ownsTemporaryFile = false;
+    return { sizeBytes: written, contentType, finalUrl: current };
   } catch (error) {
-    throw new BadRequestException({ code: 'MEDIA_VALIDATION_FAILED', message: (error as Error).message });
+    if (error instanceof BadRequestException) throw error;
+    if (controller.signal.aborted) {
+      throw new BadRequestException({ code: 'MEDIA_VALIDATION_FAILED', message: 'Remote download exceeded its deadline' });
+    }
+    // Network and filesystem exceptions can contain internal addresses or paths.
+    throw new BadRequestException({ code: 'MEDIA_VALIDATION_FAILED', message: error instanceof DownloadLimitError ? error.message : 'Remote download failed' });
+  } finally {
+    clearTimeout(timer);
+    response?.destroy();
+    if (ownsTemporaryFile) await rm(temporaryPath, { force: true });
   }
-  return { sizeBytes: written, contentType, finalUrl: current };
 }

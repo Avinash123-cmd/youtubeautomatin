@@ -5,7 +5,7 @@ const text = (path: string) => readFileSync(new URL(`../../${path}`, import.meta
 
 describe('Python work limit deployment wiring', () => {
   it('documents and passes each limit into both Compose environments', () => {
-    const settings = ['AI_ENGINE_MAX_CONCURRENT_WORK', 'VIDEO_PROCESSOR_MAX_CONCURRENT_WORK', 'VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES'];
+    const settings = ['AI_ENGINE_MAX_CONCURRENT_WORK', 'AI_ENGINE_MAX_WAITING_WORK', 'VIDEO_PROCESSOR_MAX_CONCURRENT_WORK', 'VIDEO_PROCESSOR_MAX_WAITING_WORK', 'VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES', 'VIDEO_PROCESSOR_MAX_WAITING_PROBES'];
     const example = text('.env.example');
     const files = ['docker-compose.dev.yml', 'docker-compose.prod.yml'].map(text);
     for (const setting of settings) {

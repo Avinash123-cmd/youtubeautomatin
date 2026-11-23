@@ -18,6 +18,20 @@ export class ServiceCallError extends Error {
   }
 }
 
+/** The service explicitly refused admission before starting any work. */
+export class ServiceCapacityError extends ServiceCallError {
+  constructor(service: 'ai-engine' | 'video-processor', readonly retryAfterMs: number) {
+    super('Service capacity is temporarily unavailable', service, 503, 'SERVICE_CAPACITY_EXHAUSTED', true);
+  }
+}
+
+function capacityRetryAfter(value: string | null): number {
+  // Our services use delta-seconds. Bound an invalid or unexpectedly large header so that
+  // cancellation/lease checks are not indefinitely postponed by a proxy or bad response.
+  if (!value || !/^\d{1,10}$/.test(value)) return 5_000;
+  return Math.max(1_000, Math.min(30_000, Number(value) * 1_000));
+}
+
 async function post<T>(
   service: 'ai-engine' | 'video-processor',
   baseUrl: string,
@@ -41,6 +55,11 @@ async function post<T>(
     if (!response.ok) {
       const detail = (parsed as { detail?: unknown }).detail;
       const record = (typeof detail === 'object' && detail !== null ? detail : {}) as Record<string, unknown>;
+      // Never replay ambiguous failures: a timeout, generic 503, or provider 429 may follow
+      // work that already started. Only this exact admission refusal is safe to repeat.
+      if (response.status === 503 && record.code === 'SERVICE_CAPACITY_EXHAUSTED' && record.retryable === true) {
+        throw new ServiceCapacityError(service, capacityRetryAfter(response.headers.get('retry-after')));
+      }
       const retryable = response.status >= 500 || response.status === 429 || record.retryable === true;
       throw new ServiceCallError(
         String(record.message ?? detail ?? `HTTP ${response.status}`),

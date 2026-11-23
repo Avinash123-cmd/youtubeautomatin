@@ -15,9 +15,19 @@ vp = importlib.import_module('services.video-processor.app.main')
 ai = importlib.import_module('services.ai-engine.app.main')
 
 
+async def wait_for_waiter(limiter):
+    async def wait():
+        while True:
+            with limiter._lock:
+                if len(limiter._waiters) == 1:
+                    return
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(wait(), 3)
+
+
 class HealthConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def exercise(self, module, first_path, first_payload, first_work, second_path, second_payload, second_work):
-        limiter = WorkLimiter(1, 'test-work')
+        limiter = WorkLimiter(1, 'test-work', max_waiting=1)
         first_started = threading.Event()
         release = threading.Event()
         second_started = threading.Event()
@@ -58,10 +68,14 @@ class HealthConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                     tasks.append(asyncio.create_task(client.post(first_path, json=first_payload, headers={'x-api-key': 'test-key'})))
                     self.assertTrue(await asyncio.to_thread(first_started.wait, 3))
                     tasks.append(asyncio.create_task(client.post(second_path, json=second_payload, headers={'x-api-key': 'test-key'})))
-                    await asyncio.sleep(0.1)
+                    await wait_for_waiter(limiter)
                     self.assertFalse(second_started.is_set(), 'a second expensive route exceeded the work limit')
+                    overflow = await asyncio.wait_for(client.post(second_path, json=second_payload, headers={'x-api-key': 'test-key'}), timeout=2)
+                    self.assertEqual(overflow.status_code, 503)
+                    self.assertEqual(overflow.json()['detail']['code'], 'SERVICE_CAPACITY_EXHAUSTED')
+                    self.assertEqual(overflow.headers['retry-after'], '5')
                     # Waiting work does not occupy FastAPI's request thread pool or
-                    # turn probes/authentication into a capacity error.
+                    # turn health/authentication into a capacity error.
                     live = await asyncio.wait_for(client.get('/live'), timeout=2)
                     health = await asyncio.wait_for(client.get('/health'), timeout=2)
                     denied = await asyncio.wait_for(client.post(second_path, json=second_payload, headers={'x-api-key': 'wrong'}), timeout=2)
@@ -91,7 +105,7 @@ class HealthConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_video_probes_are_bounded_but_independent_of_rendering(self):
         render_limit = WorkLimiter(1, 'test-render')
-        probe_limit = WorkLimiter(1, 'test-probe')
+        probe_limit = WorkLimiter(1, 'test-probe', max_waiting=1)
         render_started, release_render = threading.Event(), threading.Event()
         probe_started, release_probe, second_started = threading.Event(), threading.Event(), threading.Event()
         render_payload = dict(source_path='/source', output_path='/output', start=0, end=1,
@@ -129,8 +143,12 @@ class HealthConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                     tasks.append(asyncio.create_task(client.post('/probe', json={'path': '/first'}, headers=headers)))
                     self.assertTrue(await asyncio.to_thread(probe_started.wait, 3), 'render blocked the probe pool')
                     tasks.append(asyncio.create_task(client.post('/probe', json={'path': '/second'}, headers=headers)))
-                    await asyncio.sleep(0.1)
+                    await wait_for_waiter(probe_limit)
                     self.assertFalse(second_started.is_set(), 'probe limit was exceeded')
+                    overflow = await client.post('/probe', json={'path': '/overflow'}, headers=headers)
+                    self.assertEqual(overflow.status_code, 503)
+                    self.assertEqual(overflow.json()['detail']['code'], 'SERVICE_CAPACITY_EXHAUSTED')
+                    self.assertFalse(tasks[0].done(), 'probe pressure affected the separate render pool')
                     release_probe.set()
                     self.assertEqual((await asyncio.wait_for(tasks[1], 3)).status_code, 200)
                     self.assertEqual((await asyncio.wait_for(tasks[2], 3)).status_code, 200)

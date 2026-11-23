@@ -35,17 +35,34 @@ is the equivalent configuration if you standardise on nginx.
   worker heartbeats, queue depths, counts, health events, storage driver, Graph version, uptime.
 * `bash infrastructure/scripts/healthcheck.sh` — operator smoke test over all three services.
 
-Python `/live` runs on the event loop; `/health` is independent of expensive work. The AI service
-limits `/transcribe`, `/analyze`, and `/captions` to `AI_ENGINE_MAX_CONCURRENT_WORK` (default 1),
-while the video service limits `/render`, `/validate`, and `/audio-analysis` to
-`VIDEO_PROCESSOR_MAX_CONCURRENT_WORK` (default 1) and `/probe` to a separate
-`VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES` pool (default 2). Limits are per process, so multiply them by
-number of Uvicorn processes and replicas. A request waits asynchronously for capacity rather than
-immediately consuming BullMQ retries; a disconnected waiter is removed, but FFmpeg or Whisper work
-already running is not cancelled and continues to occupy its slot. A request that exceeds its client
-deadline can still consume a retry. Pending requests themselves are not capped by these limits: bound
-request concurrency at the worker/proxy and provision CPU/memory even for a single job. `/probe` has
-its own work pool, so it does not wait for a render slot; CPU and I/O contention can still affect it.
+Python `/live` runs on the event loop; `/health` is independent of expensive work. Per Python process:
+
+| Pool / endpoints | Concurrent work (1–32) | Accepted waiters (0–128) |
+| --- | --- | --- |
+| AI `/transcribe`, `/analyze`, `/captions` | `AI_ENGINE_MAX_CONCURRENT_WORK` (default 1) | `AI_ENGINE_MAX_WAITING_WORK` (default 4) |
+| Video `/render`, `/validate`, `/audio-analysis` | `VIDEO_PROCESSOR_MAX_CONCURRENT_WORK` (default 1) | `VIDEO_PROCESSOR_MAX_WAITING_WORK` (default 4) |
+| Video `/probe` | `VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES` (default 2) | `VIDEO_PROCESSOR_MAX_WAITING_PROBES` (default 4) |
+
+A full pool, or an admitted waiter that cannot start within five seconds, returns HTTP 503 with
+`detail.code=SERVICE_CAPACITY_EXHAUSTED`, `retryable=true`, and `Retry-After: 5`. This response is
+issued **before work starts**. Pipeline and render workers retry only that service request with
+jittered backoff while retaining the same BullMQ delivery and renewing the database lease; neither
+capacity refusal nor waiting is a processing failure. This also avoids repeating an already-completed
+analysis just because captions are busy. Workers check cancellation and lease ownership before each
+resubmission, and log persistent capacity pressure. A worker slot remains occupied while waiting,
+so sustained saturation can delay other jobs; monitor worker occupancy and queue depth and scale or
+size the service appropriately.
+
+Deploy the updated pipeline, render and scheduler workers **before** enabling the new Python service
+versions: older pipeline/render workers treat a capacity 503 as a failed attempt, and older schedulers
+can delete an old work directory without checking whether its job is active. Limits apply per process
+and replica, not cluster-wide, and provide no global fairness. The admission cap is applied after HTTP
+body parsing/authentication; configure proxy connection and body-size limits as well. Disconnecting or timing out a waiter removes
+it, but running FFmpeg/Whisper work cannot be cancelled and keeps its slot until it finishes. An
+accepted operation's timeout, a lost response, process crash, lease loss, or forced shutdown remains
+ambiguous and can consume retries or repeat work not durably checkpointed; cancellation checks are not
+atomic with a new service submission. `/probe` has a separate pool, though CPU/I/O contention can
+still affect it.
 
 An upload whose inspection returns `503 VIDEO_PROCESSOR_UNAVAILABLE` is not rejected as invalid media.
 The upload page can retry validation without uploading the parts again while it remains open. This
@@ -63,7 +80,14 @@ Local storage stages writes as adjacent `.tmp-<uuid>` files. A crash can leave o
 remove stale temporary files after confirming no writer is active, never the final object itself.
 Incomplete local uploads, including those retained for inspection retries, live under
 `WORK_DIR/uploads` and are not automatically expired; monitor that directory and remove abandoned
-staging files only after confirming the upload is no longer active or needed for retry.
+staging files only after confirming the upload is no longer active or needed for retry. The scheduler
+also retains processing-job directories for unfinished, configuration-paused, failed, or partially
+completed jobs, including during capacity waits and possible manual retries. Completed or cancelled
+jobs become eligible only after both the directory and terminal state are at least 48 hours old. These
+retained directories can consume disk indefinitely; monitor and remove them only after confirming they
+are no longer needed. The job-aware check does not cover clip-ID publishing scratch directories, nor
+work that continues more than 48 hours after its job was cancelled. If PostgreSQL is unavailable, a
+cleanup batch containing UUID directories is left in place rather than guessed safe.
 
 ## Backups
 

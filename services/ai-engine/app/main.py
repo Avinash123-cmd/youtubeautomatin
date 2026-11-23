@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 from services.media_paths import media_path
-from services.work_limits import WorkLimiter, limit_from_env
+from services.work_limits import WorkLimiter, limit_from_env, waiting_limit_from_env
 
 from .config import ConfigurationError, Settings, load_settings
 from .gemini import GeminiError, SchemaValidationError
@@ -37,7 +37,10 @@ logger = logging.getLogger("ai-engine")
 
 app = FastAPI(title="ClipForge AI Engine", version="1.0.0")
 # One expensive job by default; this ceiling is per Python process, not per cluster.
-_work_limiter = WorkLimiter(limit_from_env("AI_ENGINE_MAX_CONCURRENT_WORK"), "ai-work")
+_work_limiter = WorkLimiter(
+    limit_from_env("AI_ENGINE_MAX_CONCURRENT_WORK"), "ai-work",
+    max_waiting=waiting_limit_from_env("AI_ENGINE_MAX_WAITING_WORK"),
+)
 
 _settings: Settings | None = None
 _settings_error: str | None = None

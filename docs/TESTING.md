@@ -46,6 +46,21 @@ socket server when `REDIS_TEST_BINARY` points to a `redis-server` executable; it
 REDIS_TEST_BINARY="$(command -v redis-server)" npx vitest run --config tests/vitest.integration.config.ts tests/integration/redis-resilience.test.ts
 ```
 
+`tests/integration/service-capacity.test.ts` additionally requires both the disposable PostgreSQL
+`DATABASE_URL` and `REDIS_TEST_BINARY`. It uses real BullMQ, leases, and recovery with stubbed Python
+HTTP, storage and configuration. It checks that caption/render capacity refusals keep one delivery
+active, renew its lease, protect its old work directory, avoid repeat analysis and retries, and stop
+resubmission on cancellation:
+
+```bash
+DATABASE_URL="postgresql://user:pass@localhost:5432/clipforge_test" REDIS_TEST_BINARY="$(command -v redis-server)" \
+  npx vitest run --config tests/vitest.integration.config.ts tests/integration/service-capacity.test.ts
+```
+
+Python limiter tests cover bounded admission, timeout, disconnect/cancellation and separate probe
+capacity, including real Uvicorn TCP connections (`python -m unittest discover -s tests/python -v`).
+These tests do not exercise real providers, FFmpeg saturation or a production load balancer.
+
 ## End-to-end — `.venv/bin/python tests/e2e/full_workflow.py <video>`
 
 A strict HTTP harness against a running stack (API, AI engine, video processor, all five workers).

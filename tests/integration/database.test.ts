@@ -134,9 +134,11 @@ describe('processing job lifecycle', () => {
 
   it('exposes a released lease as normal and only treats a stale heartbeat as abandonment', async () => {
     const job = await db.createProcessingJob({ workspaceId, sourceVideoId: sourceId, createdById: userId, configuration: baseConfig });
-    await db.transitionJob(job.id, 'PROBING', { workerId: 'worker-lease', progressPercent: 5 });
+    // Workers claim a lease before they transition a job; setting workerId
+    // without a lease would make the row owned but unclaimable.
     const acquired = await db.acquireJobLease(job.id, 'worker-lease', 60);
     expect(acquired).toBe(true);
+    await db.transitionJob(job.id, 'PROBING', { workerId: 'worker-lease', expectedLeaseOwner: 'worker-lease', leaseSeconds: 60, progressPercent: 5 });
     expect(await db.acquireJobLease(job.id, 'worker-other', 60)).toBe(false);
 
     // Release between stages: the row keeps a stale-null lease and must NOT be swept.

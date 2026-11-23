@@ -1,11 +1,11 @@
 # Testing
 
-Three layers, all runnable locally. Nothing in the test suites writes to a production database and
-no test fabricates a result.
+Three layers, all runnable locally. Integration tests create and delete real records: point them
+only at a disposable test database, never at production. No test fabricates a result.
 
 ## Unit — `npm run test:unit`
 
-Vitest, no external services (`tests/vitest.config.ts`), 37 tests:
+Vitest, no external services (`tests/vitest.config.ts`). Coverage includes:
 
 * `tests/unit/state-machine.test.ts` — every state has a transition list, the happy path walks in
   order, `ASSET_STORAGE → COMPLETED` is allowed (regression: manual publishing used to dead-end),
@@ -23,8 +23,8 @@ Vitest, no external services (`tests/vitest.config.ts`), 37 tests:
 
 ## Integration — `npm run test:integration`
 
-Vitest against the **real PostgreSQL** (`tests/vitest.integration.config.ts`), 10 tests. A throwaway
-workspace is created and deleted per run:
+Vitest against **real PostgreSQL** (`tests/vitest.integration.config.ts`). Throwaway workspaces
+are created and deleted by the database tests. Coverage includes:
 
 * full job lifecycle with stage bookkeeping (no stage left `RUNNING`),
 * illegal transition rejected and row untouched,
@@ -38,7 +38,13 @@ workspace is created and deleted per run:
   win over global rows.
 
 Requires `DATABASE_URL` (read from `.env`). Not mocked: this is the same Prisma client the workers
-use.
+use. The account pagination and usage aggregation checks create and delete two temporary workspaces;
+run them only against a disposable database. An additional Redis disconnect test starts its own Unix
+socket server when `REDIS_TEST_BINARY` points to a `redis-server` executable; it skips otherwise:
+
+```bash
+REDIS_TEST_BINARY="$(command -v redis-server)" npx vitest run --config tests/vitest.integration.config.ts tests/integration/redis-resilience.test.ts
+```
 
 ## End-to-end — `.venv/bin/python tests/e2e/full_workflow.py <video>`
 
@@ -119,13 +125,12 @@ environmental reasons:
 
 ```bash
 pkill -f "dist/workers/"      # or stop them however you launched them
-npm run test:integration      # 14 tests
+npm run test:integration
 ```
 
-Rounds run in this repository: **38 unit tests**, **14 integration tests**, and the E2E workflow.
-Newest cases cover three defects found in the audit round (see `IMPLEMENTATION_STATUS.md`):
-ranged reads honour byte offsets, multipart parts are order-independent and idempotent, and `attempt`
-counts retries rather than lease acquisitions.
+Cases include ranged reads honouring byte offsets, order-independent multipart parts, and `attempt`
+counting retries rather than lease acquisitions. See `IMPLEMENTATION_STATUS.md` for historical audit
+results; run the suites above for current counts.
 
 ## Blocked-by-credentials tests
 

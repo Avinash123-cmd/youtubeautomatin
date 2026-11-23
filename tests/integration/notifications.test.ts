@@ -354,7 +354,10 @@ describe('settings', () => {
       { enabled: false, chatId: '@my_channel', categories: ['DAILY_SUMMARY', 'QUOTA_ERROR'], dailySummaryHour: 21 },
       userId,
     );
-    expect(saved).toEqual({ enabled: false, chatId: '@my_channel', categories: ['DAILY_SUMMARY', 'QUOTA_ERROR'], dailySummaryHour: 21 });
+    expect(saved).toEqual({
+      enabled: false, chatId: '@my_channel', categories: ['DAILY_SUMMARY', 'QUOTA_ERROR'], dailySummaryHour: 21,
+      webhookUrl: null, adminUserIds: [],
+    });
     expect(await service.settings(workspaceId)).toEqual(saved);
   });
 

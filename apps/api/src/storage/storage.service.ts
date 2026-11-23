@@ -14,9 +14,8 @@ import {
   UploadPartCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { open } from 'node:fs/promises';
-import { mkdir, rm, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -115,6 +114,25 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     return full;
   }
 
+  /** Stage beside the target so rename is atomic on the same filesystem. */
+  private async writeLocalAtomically(target: string, source: () => Readable): Promise<void> {
+    await mkdir(dirname(target), { recursive: true });
+    const temporaryPath = `${target}.tmp-${randomUUID()}`;
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    let published = false;
+    try {
+      try {
+        await pipeline(source(), handle.createWriteStream());
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
+      await rename(temporaryPath, target);
+      published = true;
+    } finally {
+      if (!published) await rm(temporaryPath, { force: true });
+    }
+  }
+
   async putFile(key: string, filePath: string, contentType: string): Promise<StoredObject> {
     this.assertSafeKey(key);
     const info = await stat(filePath);
@@ -130,8 +148,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
       );
     } else {
       const target = this.localPath(key);
-      await mkdir(dirname(target), { recursive: true });
-      await pipeline(createReadStream(filePath), createWriteStream(target));
+      await this.writeLocalAtomically(target, () => createReadStream(filePath));
     }
     return { key, sizeBytes: info.size, contentType };
   }
@@ -142,8 +159,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
       await this.s3!.send(new PutObjectCommand({ Bucket: env.S3_BUCKET!, Key: key, Body: body, ContentType: contentType }));
     } else {
       const target = this.localPath(key);
-      await mkdir(dirname(target), { recursive: true });
-      await pipeline(Readable.from(body), createWriteStream(target));
+      await this.writeLocalAtomically(target, () => Readable.from(body));
     }
     return { key, sizeBytes: body.byteLength, contentType };
   }
@@ -198,9 +214,12 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
   /** Downloads an object to a local temp path — required by FFmpeg and upload APIs. */
   async downloadToFile(key: string, destination: string): Promise<number> {
     const { stream } = await this.getStream(key);
-    await mkdir(dirname(destination), { recursive: true });
-    await pipeline(stream, createWriteStream(destination));
-    return (await stat(destination)).size;
+    try {
+      await this.writeLocalAtomically(destination, () => stream);
+      return (await stat(destination)).size;
+    } finally {
+      stream.destroy();
+    }
   }
 
   async exists(key: string): Promise<boolean> {

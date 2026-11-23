@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, formatDuration } from '@/lib/api';
+import { pollingInterval } from '@/lib/polling';
 import { Card, CardHeader, EmptyState, ErrorState, Skeleton } from '@/components/ui';
 
 interface Analysis {
@@ -17,7 +18,7 @@ export function JobAnalysis({ jobId, terminal }: { jobId: string; terminal: bool
   const [page, setPage] = useState(1);
   const result = useQuery({ queryKey: ['job-analysis', jobId, page],
     queryFn: () => api<Analysis>(`/api/jobs/${jobId}/analysis?page=${page}&pageSize=50`),
-    refetchInterval: terminal ? false : 5000,
+    refetchInterval: terminal ? false : query => pollingInterval(5_000, query),
   });
   return <Card>
     <CardHeader title="Transcript and detected moments" description="Source timestamps and AI quality assessments—not predictions of virality." />

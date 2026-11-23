@@ -173,6 +173,7 @@ services:
       dockerfile: infrastructure/docker/ai-engine.Dockerfile
     environment:
       AI_ENGINE_API_KEY: ${AI_ENGINE_API_KEY:?set AI_ENGINE_API_KEY}
+      AI_ENGINE_MAX_CONCURRENT_WORK: ${AI_ENGINE_MAX_CONCURRENT_WORK:-1}
       NODE_ENV: development
       AI_PROVIDER: ${AI_PROVIDER:?set AI_PROVIDER explicitly (gemini or fixture for tests)}
       TEST_MODE: ${TEST_MODE:-0}
@@ -195,6 +196,8 @@ services:
       dockerfile: infrastructure/docker/video-processor.Dockerfile
     environment:
       VIDEO_PROCESSOR_API_KEY: ${VIDEO_PROCESSOR_API_KEY:?set VIDEO_PROCESSOR_API_KEY}
+      VIDEO_PROCESSOR_MAX_CONCURRENT_WORK: ${VIDEO_PROCESSOR_MAX_CONCURRENT_WORK:-1}
+      VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES: ${VIDEO_PROCESSOR_MAX_CONCURRENT_PROBES:-2}
       WORK_DIR: /data/work
       FFMPEG_PATH: /usr/bin/ffmpeg
       FFPROBE_PATH: /usr/bin/ffprobe

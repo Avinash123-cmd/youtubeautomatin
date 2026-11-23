@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const config = vi.hoisted(() => ({ STORAGE_DRIVER: 'local', STORAGE_LOCAL_ROOT: '', STORAGE_LOCAL_PUBLIC_BASE_URL: 'https://api.example.com/media' }));
@@ -28,6 +29,34 @@ describe('actual local filesystem adapter', () => {
   });
   it.each(['../outside', '/etc/passwd', 'workspace/../../outside', 'workspace\\outside', ''])('rejects unsafe object keys: %j', async key => {
     await expect(new StorageService().putBuffer(key, Buffer.from('blocked'), 'video/mp4')).rejects.toThrow();
+  });
+  it('atomically replaces an existing local object and leaves no staging file', async () => {
+    const storage = new StorageService();
+    const key = 'workspace/video.mp4';
+    await storage.putBuffer(key, Buffer.from('old'), 'video/mp4');
+    await storage.putBuffer(key, Buffer.from('complete-new-content'), 'video/mp4');
+    expect(await readFile(join(config.STORAGE_LOCAL_ROOT, key), 'utf8')).toBe('complete-new-content');
+    expect(await readdir(join(config.STORAGE_LOCAL_ROOT, 'workspace'))).toEqual(['video.mp4']);
+  });
+  it('preserves an existing object and cleans up staging when a file source fails', async () => {
+    const storage = new StorageService();
+    const key = 'workspace/video.mp4';
+    await storage.putBuffer(key, Buffer.from('old'), 'video/mp4');
+    const unreadable = join(dir, 'directory-as-file');
+    await mkdir(unreadable);
+    await expect(storage.putFile(key, unreadable, 'video/mp4')).rejects.toThrow();
+    expect(await readFile(join(config.STORAGE_LOCAL_ROOT, key), 'utf8')).toBe('old');
+    expect(await readdir(join(config.STORAGE_LOCAL_ROOT, 'workspace'))).toEqual(['video.mp4']);
+  });
+  it('does not leave a partial destination when a storage download fails', async () => {
+    const storage = new StorageService();
+    const destination = join(dir, 'download.mp4');
+    await writeFile(destination, 'previous');
+    const stream = new Readable({ read() { this.push('partial'); this.destroy(new Error('stream failed')); } });
+    vi.spyOn(storage, 'getStream').mockResolvedValue({ stream });
+    await expect(storage.downloadToFile('workspace/video.mp4', destination)).rejects.toThrow('stream failed');
+    expect(await readFile(destination, 'utf8')).toBe('previous');
+    expect((await readdir(dir)).filter(name => name.includes('.tmp-'))).toEqual([]);
   });
   it('constructs the existing media probe URL without inventing a static object mount', () => {
     expect(new StorageService().publicUrl('health/probe.mp4')).toBe('https://api.example.com/media/health/probe.mp4');

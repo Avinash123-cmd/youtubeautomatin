@@ -382,18 +382,35 @@ export class AccountsService {
 
   // ------------------------------- queries ---------------------------------
 
-  async list(ctx: RequestContext) {
-    const accounts = await prisma.connectedAccount.findMany({
-      where: { workspaceId: ctx.workspaceId },
-      include: { credential: { select: { expiresAt: true, refreshedAt: true, scope: true } } },
-      orderBy: { createdAt: 'asc' },
-    });
+  async list(ctx: RequestContext, query: { cursor?: string; pageSize: number } = { pageSize: 50 }) {
+    if (!Number.isInteger(query.pageSize) || query.pageSize < 1 || query.pageSize > 100) {
+      throw new BadRequestException({ code: 'VALIDATION_FAILED', message: 'pageSize must be between 1 and 100' });
+    }
+    // UUID keyset pagination remains valid even when the previous account was
+    // deleted. Every query is workspace-scoped, including the platform summary.
+    const [rows, publishingGroups] = await Promise.all([
+      prisma.connectedAccount.findMany({
+        where: { workspaceId: ctx.workspaceId, ...(query.cursor ? { id: { gt: query.cursor } } : {}) },
+        include: { credential: { select: { expiresAt: true, refreshedAt: true, scope: true } } },
+        orderBy: { id: 'asc' },
+        take: query.pageSize + 1,
+      }),
+      prisma.connectedAccount.groupBy({
+        by: ['platform'],
+        where: { workspaceId: ctx.workspaceId, status: 'CONNECTED', publishingEnabled: true, platform: { in: ['YOUTUBE', 'INSTAGRAM'] } },
+      }),
+    ]);
+    const hasMore = rows.length > query.pageSize;
+    const accounts = rows.slice(0, query.pageSize);
     return {
       accounts: accounts.map((a) => ({
         ...this.toDto(a),
         tokenExpiresAt: a.credential?.expiresAt?.toISOString() ?? null,
         tokenRefreshedAt: a.credential?.refreshedAt?.toISOString() ?? null,
       })),
+      nextCursor: hasMore ? accounts[accounts.length - 1].id : null,
+      // This bounded aggregate covers all pages, not just the currently displayed accounts.
+      eligiblePublishingPlatforms: publishingGroups.map((group) => group.platform),
       integrations: {
         youtubeConfigured: Boolean(env.YOUTUBE_CLIENT_ID && env.YOUTUBE_CLIENT_SECRET && env.YOUTUBE_REDIRECT_URI),
         instagramConfigured: Boolean(env.META_APP_ID && env.META_APP_SECRET && env.META_REDIRECT_URI && env.META_GRAPH_API_VERSION),

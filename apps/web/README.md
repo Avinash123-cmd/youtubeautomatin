@@ -33,3 +33,9 @@ lib/          api client (CSRF-aware), react-query hooks, config schema
 * Anything operator-only is gated with `useIsOperator()` so a member never sees a control that can
   only return 403.
 * No hard-coded copy for state that the API knows — render what the API returns.
+* React Query shares observers for the same key within a tab and suspends polling in background
+  tabs. Idle lists poll less frequently, transient failures back off, and stale queries refresh when
+  the user returns. Accounts use cursor pagination; publishing eligibility covers all pages.
+* After an explicit media-inspection outage, the upload page retains completion details in memory
+  and can retry validation without re-uploading. This retry is lost on reload and is not offered for
+  ambiguous network/proxy errors.

@@ -9,6 +9,10 @@ import { env } from '../common/env';
 import { AccountsService } from './accounts.service';
 
 const selectChannelSchema = z.object({ pendingToken: z.string().min(16), channelId: z.string().min(3).max(64) });
+const accountListQuery = z.object({
+  cursor: z.string().uuid().optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+});
 
 @ApiTags('accounts')
 @Controller('api/accounts')
@@ -16,9 +20,9 @@ export class AccountsController {
   constructor(private readonly accounts: AccountsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List connected accounts (no credentials are ever returned)' })
-  list(@CurrentContext() ctx: RequestContext) {
-    return this.accounts.list(ctx);
+  @ApiOperation({ summary: 'List connected accounts (cursor-paginated; no credentials are returned)' })
+  list(@CurrentContext() ctx: RequestContext, @Query() query: unknown) {
+    return this.accounts.list(ctx, accountListQuery.parse(query));
   }
 
   @Roles('OWNER', 'ADMIN')

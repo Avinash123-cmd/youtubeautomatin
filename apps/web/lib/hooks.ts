@@ -2,6 +2,10 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, setCsrfToken } from './api';
+import { pollingInterval } from './polling';
+
+const TERMINAL_JOBS = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED', 'NEEDS_CONFIGURATION']);
+const TERMINAL_PUBLISHING = new Set(['PUBLISHED', 'FAILED', 'SKIPPED', 'CANCELLED']);
 
 export interface ComponentHealth {
   component: string;
@@ -25,7 +29,7 @@ export function useSession() {
   return useQuery({
     queryKey: ['session'],
     // Recover from a stopped/restarted API without repeatedly polling healthy sessions.
-    refetchInterval: query => query.state.error ? 5000 : false,
+    refetchInterval: query => query.state.error ? pollingInterval(5_000, query) : false,
     queryFn: async () => {
       const session = await api<SessionResponse>('/api/auth/session');
       if (session.authenticated && session.csrfToken) setCsrfToken(session.csrfToken);
@@ -65,7 +69,15 @@ export interface DashboardSummary {
 }
 
 export function useDashboard() {
-  return useQuery({ queryKey: ['dashboard'], queryFn: () => api<DashboardSummary>('/api/dashboard/summary'), refetchInterval: 10_000 });
+  return useQuery({
+    queryKey: ['dashboard'],
+    queryFn: () => api<DashboardSummary>('/api/dashboard/summary'),
+    refetchInterval: query => {
+      const counts = query.state.data?.counts;
+      const active = !counts || counts.processing > 0 || counts.pendingPublishingJobs > 0;
+      return pollingInterval(active ? 10_000 : 60_000, query);
+    },
+  });
 }
 
 
@@ -88,7 +100,11 @@ export function useJobs() {
   return useQuery({
     queryKey: ['jobs'],
     queryFn: () => api<{ items: JobSummary[]; total: number }>('/api/jobs?pageSize=50'),
-    refetchInterval: 5_000,
+    refetchInterval: query => {
+      const items = query.state.data?.items;
+      const active = !items || items.some(job => !TERMINAL_JOBS.has(job.status));
+      return pollingInterval(active ? 5_000 : 30_000, query);
+    },
   });
 }
 
@@ -115,8 +131,8 @@ export function useJob(id: string | undefined) {
     enabled: Boolean(id),
     refetchInterval: (query) => {
       const data = query.state.data as JobDetail | undefined;
-      if (!data) return 3_000;
-      return ['COMPLETED', 'FAILED', 'CANCELLED', 'PARTIALLY_COMPLETED', 'NEEDS_CONFIGURATION'].includes(data.status) ? false : 2_500;
+      if (data && TERMINAL_JOBS.has(data.status)) return false;
+      return pollingInterval(data ? 2_500 : 3_000, query);
     },
   });
 }
@@ -144,7 +160,7 @@ export function useClips(filters: { durationKind?: number; status?: string } = {
   return useQuery({
     queryKey: ['clips', filters],
     queryFn: () => api<{ items: ClipSummary[]; total: number }>(`/api/clips?${params.toString()}`),
-    refetchInterval: 8_000,
+    refetchInterval: query => pollingInterval(20_000, query),
   });
 }
 
@@ -191,11 +207,15 @@ export interface AccountsResponse {
     avatarUrl: string | null; status: string; scopes: string[]; tokenHealth: string; tokenCheckedAt: string | null;
     tokenExpiresAt: string | null; publishingEnabled: boolean; publishingConfig: Record<string, unknown> | null; lastError: string | null;
   }>;
+  nextCursor: string | null;
+  eligiblePublishingPlatforms: Array<'YOUTUBE' | 'INSTAGRAM'>;
   integrations: { youtubeConfigured: boolean; instagramConfigured: boolean; graphApiVersion: string | null };
 }
 
-export function useAccounts() {
-  return useQuery({ queryKey: ['accounts'], queryFn: () => api<AccountsResponse>('/api/accounts') });
+export function useAccounts(cursor?: string) {
+  const query = new URLSearchParams({ pageSize: '50' });
+  if (cursor) query.set('cursor', cursor);
+  return useQuery({ queryKey: ['accounts', cursor], queryFn: () => api<AccountsResponse>(`/api/accounts?${query}`) });
 }
 
 export function useVerifyAccount() {
@@ -231,7 +251,11 @@ export function usePublishing() {
         api<{ items: PublishingJobRow[]; total: number }>('/api/publishing/jobs?pageSize=50'),
         api<{ published: Array<{ id: string; platform: string; externalId: string; externalUrl: string | null; publishedAt: string; visibility: string | null; account: string }> }>('/api/publishing/history'),
       ]).then(([jobs, history]) => ({ jobs, history })),
-    refetchInterval: 8_000,
+    refetchInterval: query => {
+      const items = query.state.data?.jobs.items;
+      const active = !items || items.some(job => !TERMINAL_PUBLISHING.has(job.status));
+      return pollingInterval(active ? 10_000 : 45_000, query);
+    },
   });
 }
 
@@ -247,7 +271,7 @@ export function useActivity(limit = 100) {
   return useQuery({
     queryKey: ['activity', limit],
     queryFn: () => api<{ items: Array<{ id: string; action: string; summary: string; targetType: string | null; targetId: string | null; createdAt: string }> }>(`/api/activity?limit=${limit}`),
-    refetchInterval: 15_000,
+    refetchInterval: query => pollingInterval(30_000, query),
   });
 }
 
@@ -281,7 +305,7 @@ export function useSystemOverview(enabled = true) {
   return useQuery({
     queryKey: ['system'],
     queryFn: () => api<SystemOverview>('/api/system/overview'),
-    refetchInterval: 10_000,
+    refetchInterval: query => pollingInterval(20_000, query),
     // Operator-only endpoint: members must not hammer it just to render a "forbidden" state.
     enabled,
     retry: false,
@@ -318,7 +342,7 @@ export function useDiagnostics(enabled = true) {
   return useQuery({
     queryKey: ['diagnostics'],
     queryFn: () => api<DiagnosticsReport>('/api/system/diagnostics'),
-    refetchInterval: 60_000,
+    refetchInterval: query => pollingInterval(60_000, query),
     enabled,
     retry: false,
   });
@@ -375,7 +399,7 @@ export function useNotificationStatus(enabled = true) {
   return useQuery({
     queryKey: ['notifications', 'status'],
     queryFn: () => api<NotificationStatusView>('/api/notifications/status'),
-    refetchInterval: 30_000,
+    refetchInterval: query => pollingInterval(45_000, query),
     enabled,
     retry: false,
   });
@@ -446,6 +470,6 @@ export function usePublishingCalendar(from: string, to: string, page: number) {
     queryKey: ['publishing', 'calendar', from, to, page],
     queryFn: () => api<{ items: PublishingJobRow[]; total: number; page: number; pageSize: number }>(
       `/api/publishing/jobs?${new URLSearchParams({ scheduledFrom: from, scheduledTo: to, page: String(page), pageSize: '100' })}`),
-    refetchInterval: 15000,
+    refetchInterval: query => pollingInterval(30_000, query),
   });
 }

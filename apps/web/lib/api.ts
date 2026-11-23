@@ -113,6 +113,28 @@ export interface UploadProgress {
   percent: number;
 }
 
+export interface UploadCompletion {
+  sourceVideoId: string;
+  uploadId?: string | null;
+  parts?: Array<{ partNumber: number; etag: string }>;
+}
+
+export interface UploadedSource {
+  id: string;
+  status: string;
+  durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+/** The bytes are uploaded, but the video processor is temporarily unavailable. */
+export class UploadValidationPendingError extends ApiError {
+  constructor(cause: ApiError, readonly completion: UploadCompletion) {
+    super(cause.message, cause.status, cause.code, cause.missingConfiguration, cause.details, cause.requestId);
+    this.name = 'UploadValidationPendingError';
+  }
+}
+
 /** Chunked upload through the API with the rights declaration sent at completion. */
 export interface BrandAssetResult {
   kind: 'LOGO' | 'INTRO' | 'OUTRO';
@@ -140,10 +162,26 @@ export async function uploadBrandAsset(file: File, kind: BrandAssetResult['kind'
   return payload;
 }
 
+export async function completeSourceUpload(completion: UploadCompletion, rightsStatement: string): Promise<UploadedSource> {
+  try {
+    return await api<UploadedSource>('/api/sources/upload/complete', {
+      method: 'POST',
+      body: { ...completion, rightsDeclaration: { accepted: true, statement: rightsStatement } },
+    });
+  } catch (error) {
+    // Only this explicit response guarantees validation did not finish. A network
+    // timeout or proxy error may have occurred after the server completed it.
+    if (error instanceof ApiError && error.status === 503 && error.code === 'VIDEO_PROCESSOR_UNAVAILABLE') {
+      throw new UploadValidationPendingError(error, completion);
+    }
+    throw error;
+  }
+}
+
 export async function uploadSource(
   file: File,
   options: { youTubeReferenceUrl?: string; rightsStatement: string; onProgress?: (progress: UploadProgress) => void },
-): Promise<{ id: string; status: string; durationSeconds: number | null; width: number | null; height: number | null }> {
+): Promise<UploadedSource> {
   options.onProgress?.({ phase: 'initiating', uploadedBytes: 0, totalBytes: file.size, percent: 0 });
   const initiation = await api<{
     sourceVideoId: string;
@@ -209,17 +247,11 @@ export async function uploadSource(
   }
 
   options.onProgress?.({ phase: 'validating', uploadedBytes: file.size, totalBytes: file.size, percent: 100 });
-  const result = await api<{ id: string; status: string; durationSeconds: number | null; width: number | null; height: number | null }>(
-    '/api/sources/upload/complete',
-    {
-      method: 'POST',
-      body: {
-        sourceVideoId: initiation.sourceVideoId,
-        rightsDeclaration: { accepted: true, statement: options.rightsStatement },
-        ...(initiation.driver === 's3' ? { uploadId: initiation.uploadId, parts: completedParts } : {}),
-      },
-    },
-  );
+  const completion: UploadCompletion = {
+    sourceVideoId: initiation.sourceVideoId,
+    ...(initiation.driver === 's3' ? { uploadId: initiation.uploadId, parts: completedParts } : {}),
+  };
+  const result = await completeSourceUpload(completion, options.rightsStatement);
   options.onProgress?.({ phase: 'done', uploadedBytes: file.size, totalBytes: file.size, percent: 100 });
   return result;
 }
